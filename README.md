@@ -1,24 +1,24 @@
 # aigc_five_men_team
 lib/
-├── main.dart                 # App 入口，初始化配置
+├── main.dart                 # App 入口：负责全局初始化（API Key、数据库、Provider 绑定）
 ├── config/                   # 配置中心
-│   ├── constants.dart        # 存放 API 地址、模型名称等
-│   └── theme.dart            # 你们设计的“暖心大按钮”UI 样式主题
-├── core/                     # 核心通用工具
-│   ├── api_client.dart       # 封装 Dio 请求（对应你提供的蓝心参数表）
-│   └── utils/                # 语音处理、权限申请等工具
-├── data/                     # 数据层（离线隐私的核心）
-│   ├── models/               # 数据模型（如 ChatMessage, MemoryItem）
-│   ├── local_db/             # Sqflite 数据库配置（存储老人往事）
-│   └── repositories/         # 数据仓库：决定数据是从 API 拿还是从本地拿
-├── logic/                    # 业务逻辑层 (推荐使用 Provider)
-│   ├── chat_provider.dart    # 控制 AI 对话逻辑
-│   └── memory_provider.dart  # 控制往事检索、照片加载逻辑
-└── ui/                       # UI 表现层
-    ├── screens/              # 完整的页面
-    │   ├── home_screen.dart  # 首页（那4个大方块）
-    │   ├── chat_screen.dart  # 对话页
-    │   └── gallery_screen.dart # 记忆画册页
-    └── widgets/              # 可复用的组件
-        ├── big_button.dart   # 你们标志性的超大功能按键
-        └── chat_bubble.dart  # 适配大字体的气泡
+│   ├── constants.dart        # 环境变量：存放蓝心大模型 API 地址、模型 ID (Volc-DeepSeek-V3.2)
+│   └── theme.dart            # 全局样式：定义“暖心大按钮”配色、超大字体规范 (30sp+)
+├── core/                     # 核心工具 (Core)
+│   ├── api_client.dart       # 网络封装：基于 Dio 封装蓝心 API 请求（处理 Header 与签名）
+│   └── utils/                # 通用工具：语音转文字 (ASR)、权限申请、日期处理
+├── data/                     # 数据层 (Data)
+│   ├── models/               # 数据模型：定义 ChatMessage, StoryItem 等 JSON 解析类
+│   ├── local_db/             # 本地数据库：Sqflite 存储逻辑，实现“往事记忆”隐私不出本地
+│   └── repositories/         # 数据仓库：逻辑中转站，决定从 API 还是从本地 DB 读取数据
+├── logic/                    # 业务逻辑 (Logic/Provider)
+│   ├── chat_provider.dart    # AI 对话：控制聊天状态、流式回复接收、System Prompt 拼接
+│   └── memory_provider.dart  # 记忆管理：控制往事检索、老照片加载逻辑
+└── ui/                       # UI 表现层 (Presentation)
+    ├── screens/              # 页面级组件
+    │   ├── home_screen.dart  # 首页：核心 4 宫格“暖心大按钮”布局
+    │   ├── chat_screen.dart  # 对话页：大字体、语音波纹动画交互界面
+    │   └── gallery_screen.dart # 记忆画册：单卡片流式展示老照片与 AI 故事
+    └── widgets/              # 可复用小零件
+        ├── big_button.dart   # 自定义组件：带震动反馈和高对比度的超大按键
+        └── chat_bubble.dart  # 自定义组件：适配老年人阅读习惯的单侧大气泡

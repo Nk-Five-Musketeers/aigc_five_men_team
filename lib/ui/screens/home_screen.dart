@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../../config/theme.dart';
+import '../../logic/chat_provider.dart';
+import '../../data/models/chat_message.dart';
 
 enum _AppView { home, memory, recent, settings }
 
@@ -16,13 +19,30 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _keyboardOpen = false;
   bool _networkOnline = false;
   String _speechMode = '自动识别';
+  final TextEditingController _controller = TextEditingController();
 
   void _showView(_AppView view) {
     setState(() => _view = view);
   }
 
+  Future<void> _submit([String? quickText]) async {
+    final text = (quickText ?? _controller.text).trim();
+    if (text.isEmpty) return;
+
+    _controller.clear();
+    await context.read<ChatProvider>().sendMessage(text);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final chatProvider = context.watch<ChatProvider>();
+
     return Scaffold(
       body: Container(
         decoration: const BoxDecoration(
@@ -50,10 +70,15 @@ class _HomeScreenState extends State<HomeScreen> {
                     Expanded(
                       child: AnimatedSwitcher(
                         duration: const Duration(milliseconds: 220),
-                        child: _buildView(),
+                        child: _buildView(chatProvider),
                       ),
                     ),
-                    if (_keyboardOpen) const _TypingPanel(),
+                    if (_keyboardOpen)
+                      _TypingPanel(
+                        controller: _controller,
+                        onSend: _submit,
+                        isLoading: chatProvider.isLoading,
+                      ),
                     const SizedBox(height: 10),
                     _BottomAction(
                       keyboardOpen: _keyboardOpen,
@@ -71,9 +96,13 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildView() {
+  Widget _buildView(ChatProvider chatProvider) {
     return switch (_view) {
-      _AppView.home => const _HomeView(key: ValueKey('home')),
+      _AppView.home => _HomeView(
+          key: const ValueKey('home'),
+          messages: chatProvider.messages,
+          isLoading: chatProvider.isLoading,
+        ),
       _AppView.memory => _MemoryView(
           key: const ValueKey('memory'),
           onBack: () => _showView(_AppView.home),
@@ -162,21 +191,27 @@ class _Header extends StatelessWidget {
 }
 
 class _HomeView extends StatelessWidget {
-  const _HomeView({super.key});
+  const _HomeView({super.key, required this.messages, required this.isLoading});
+
+  final List<ChatMessage> messages;
+  final bool isLoading;
 
   @override
   Widget build(BuildContext context) {
     return ListView(
       padding: const EdgeInsets.only(bottom: 14),
-      children: const [
-        _HeroCard(),
+      children: [
+        _HeroCard(messages: messages, isLoading: isLoading),
       ],
     );
   }
 }
 
 class _HeroCard extends StatelessWidget {
-  const _HeroCard();
+  const _HeroCard({required this.messages, required this.isLoading});
+
+  final List<ChatMessage> messages;
+  final bool isLoading;
 
   @override
   Widget build(BuildContext context) {
@@ -184,10 +219,10 @@ class _HeroCard extends StatelessWidget {
       padding: const EdgeInsets.all(18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: const [
-          _TinyTag(label: '离线陪伴'),
-          SizedBox(height: 12),
-          Text(
+        children: [
+          const _TinyTag(label: '离线陪伴'),
+          const SizedBox(height: 12),
+          const Text(
             '王阿姨，上午好',
             style: TextStyle(
               fontSize: 30,
@@ -196,13 +231,13 @@ class _HeroCard extends StatelessWidget {
               color: AppTheme.text,
             ),
           ),
-          SizedBox(height: 6),
-          Text(
+          const SizedBox(height: 6),
+          const Text(
             '您可以直接和我说说话',
             style: TextStyle(fontSize: 14, color: AppTheme.textSoft),
           ),
-          SizedBox(height: 18),
-          _ChatPreview(),
+          const SizedBox(height: 18),
+          _ChatPreview(messages: messages, isLoading: isLoading),
         ],
       ),
     );
@@ -210,15 +245,45 @@ class _HeroCard extends StatelessWidget {
 }
 
 class _ChatPreview extends StatelessWidget {
-  const _ChatPreview();
+  const _ChatPreview({required this.messages, required this.isLoading});
+
+  final List<ChatMessage> messages;
+  final bool isLoading;
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
+    final actualMessages = messages.length > 1 ? messages.sublist(1) : <ChatMessage>[];
+    if (actualMessages.isEmpty) {
+      return const Column(
+        children: [
+          _MessageBubble(text: '今天想聊什么？', isUser: false),
+          _MessageBubble(text: '我想看看以前的照片。', isUser: true),
+          _MessageBubble(text: '好，我陪您慢慢看。', isUser: false),
+        ],
+      );
+    }
+
+    final displayMessages = actualMessages.length > 3
+        ? actualMessages.sublist(actualMessages.length - 3)
+        : actualMessages;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _MessageBubble(text: '今天想聊什么？', isUser: false),
-        _MessageBubble(text: '我想看看以前的照片。', isUser: true),
-        _MessageBubble(text: '好，我陪您慢慢看。', isUser: false),
+        for (final message in displayMessages)
+          _MessageBubble(text: message.content, isUser: message.isUser),
+        if (isLoading)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -823,7 +888,15 @@ class _NetworkRow extends StatelessWidget {
 }
 
 class _TypingPanel extends StatelessWidget {
-  const _TypingPanel();
+  const _TypingPanel({
+    required this.controller,
+    required this.onSend,
+    required this.isLoading,
+  });
+
+  final TextEditingController controller;
+  final Future<void> Function() onSend;
+  final bool isLoading;
 
   @override
   Widget build(BuildContext context) {
@@ -833,6 +906,9 @@ class _TypingPanel extends StatelessWidget {
         children: [
           Expanded(
             child: TextField(
+              controller: controller,
+              onSubmitted: (_) => onSend(),
+              enabled: !isLoading,
               decoration: InputDecoration(
                 hintText: '输入想说的话',
                 filled: true,
@@ -859,8 +935,10 @@ class _TypingPanel extends StatelessWidget {
               ),
             ),
             child: TextButton(
-              onPressed: () {},
-              style: TextButton.styleFrom(foregroundColor: Colors.white),
+              onPressed: isLoading ? null : onSend,
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.white,
+              ),
               child: const Text(
                 '发送',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),

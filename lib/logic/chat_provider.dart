@@ -1,9 +1,10 @@
 ﻿import 'package:flutter/foundation.dart';
 
 import '../data/models/chat_message.dart';
+import '../data/repositories/chat_repository.dart';
 
 class ChatProvider extends ChangeNotifier {
-  ChatProvider() {
+  ChatProvider({ChatRepository? repository}) : _repository = repository ?? ChatRepository() {
     _messages.add(
       ChatMessage(
         id: 'welcome',
@@ -14,9 +15,12 @@ class ChatProvider extends ChangeNotifier {
     );
   }
 
+  final ChatRepository _repository;
   final List<ChatMessage> _messages = <ChatMessage>[];
+  bool _isLoading = false;
 
   List<ChatMessage> get messages => List.unmodifiable(_messages);
+  bool get isLoading => _isLoading;
 
   Future<void> sendMessage(String content) async {
     final text = content.trim();
@@ -30,31 +34,34 @@ class ChatProvider extends ChangeNotifier {
         timestamp: DateTime.now(),
       ),
     );
-    notifyListeners();
+    _setLoading(true);
 
-    await Future<void>.delayed(const Duration(milliseconds: 520));
-
-    _messages.add(
-      ChatMessage(
-        id: '${DateTime.now().microsecondsSinceEpoch}_assistant',
-        content: _buildReply(text),
-        isUser: false,
-        timestamp: DateTime.now(),
-      ),
-    );
-    notifyListeners();
+    try {
+      final reply = await _repository.fetchReply(text);
+      _messages.add(
+        ChatMessage(
+          id: '${DateTime.now().microsecondsSinceEpoch}_assistant',
+          content: reply,
+          isUser: false,
+          timestamp: DateTime.now(),
+        ),
+      );
+    } catch (e) {
+      _messages.add(
+        ChatMessage(
+          id: '${DateTime.now().microsecondsSinceEpoch}_assistant_error',
+          content: '请求 AI 服务失败，请稍后重试。',
+          isUser: false,
+          timestamp: DateTime.now(),
+        ),
+      );
+    } finally {
+      _setLoading(false);
+    }
   }
 
-  String _buildReply(String text) {
-    if (text.contains('喝水') || text.contains('口渴')) {
-      return '收到，我记下来了。先喝半杯温水，等会我们再聊聊今天的状态。';
-    }
-    if (text.contains('记忆') || text.contains('以前')) {
-      return '我们一起回忆一下吧。你可以说说印象最深的一次家庭旅行，我来帮你整理成小故事。';
-    }
-    if (text.contains('担心') || text.contains('焦虑')) {
-      return '谢谢你愿意告诉我。先深呼吸三次，我会陪着你慢慢聊，不着急。';
-    }
-    return '我听到了：“$text”。如果你愿意，我可以继续追问几个轻松的问题，帮你把想法整理清楚。';
+  void _setLoading(bool value) {
+    _isLoading = value;
+    notifyListeners();
   }
 }

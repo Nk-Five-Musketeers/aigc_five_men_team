@@ -9,7 +9,10 @@ class ApiClient {
             baseUrl: AppConstants.apiBaseUrl,
             connectTimeout: const Duration(seconds: 10),
             receiveTimeout: const Duration(seconds: 20),
-            headers: const {'Content-Type': 'application/json'},
+            headers: const {
+              'Content-Type': 'application/json; charset=utf-8',
+              'Authorization': 'Bearer ${AppConstants.apiKey}',
+            },
           ),
         );
 

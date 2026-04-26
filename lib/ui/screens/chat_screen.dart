@@ -99,6 +99,17 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
+            if (provider.isLoading)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: Row(
+                  children: const [
+                    SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                    SizedBox(width: 10),
+                    Text('AI 正在思考，请稍候...'),
+                  ],
+                ),
+              ),
             const SizedBox(height: 8),
             SizedBox(
               height: 40,
@@ -109,7 +120,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   final text = _quickPrompts[index];
                   return ActionChip(
                     label: Text(text),
-                    onPressed: () => _submit(text),
+                    onPressed: provider.isLoading ? null : () => _submit(text),
                   );
                 },
                 separatorBuilder: (_, __) => const SizedBox(width: 8),
@@ -129,11 +140,12 @@ class _ChatScreenState extends State<ChatScreen> {
                         decoration: const InputDecoration(
                           hintText: '请输入内容，例如：我有点想家',
                         ),
+                        enabled: !provider.isLoading,
                       ),
                     ),
                     const SizedBox(width: 8),
                     FilledButton.icon(
-                      onPressed: _submit,
+                      onPressed: provider.isLoading ? null : _submit,
                       icon: const Icon(Icons.send_rounded),
                       label: const Text('发送'),
                     ),

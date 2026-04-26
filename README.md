@@ -28,11 +28,8 @@
 
 ### 4. UI 表现层 (UI - 老年人适配)
 * `lib/ui/screens/` - **页面级组件**：
-    * `home_screen.dart`：首页 4 宫格“暖心大按钮”布局。
-    * `chat_screen.dart`：对话页，支持语音波纹交互。
-    * `gallery_screen.dart`：记忆画册，单卡片流式展示。
+    * `home_screen.dart`：单屏暖忆陪伴 UI，包含首页对话、回忆图鉴、最近记录、设置与底部输入区。
 * `lib/ui/widgets/` - **可复用组件**：
-    * `big_button.dart`：带震动反馈的高对比度超大按键。
-    * `chat_bubble.dart`：适配老年人阅读习惯的单侧气泡。
+    * 当前 UI 组件以内聚私有组件形式集中在 `home_screen.dart`，后续稳定后可再拆分复用组件。
 
 ---

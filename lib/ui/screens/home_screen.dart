@@ -21,7 +21,6 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _keyboardOpen = false;
   bool _networkOnline = false;
   String _speechMode = '自动识别';
-  final TextEditingController _controller = TextEditingController();
 
   @override
   void dispose() {

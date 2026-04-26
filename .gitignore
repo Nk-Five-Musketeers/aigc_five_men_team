@@ -19,3 +19,5 @@ devtools_options.yaml
 *.log
 *.tmp
 .ui_reference/
+__pycache__/
+*.pyc

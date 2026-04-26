@@ -18,7 +18,6 @@ class ChatProvider extends ChangeNotifier {
 
   final ChatRepository _repository;
   final List<ChatMessage> _messages = <ChatMessage>[];
-  bool _isLoading = false;
 
   bool _isSending = false;
   int _userTurnCount = 0;
@@ -26,7 +25,6 @@ class ChatProvider extends ChangeNotifier {
   bool get isSending => _isSending;
 
   List<ChatMessage> get messages => List.unmodifiable(_messages);
-  bool get isLoading => _isLoading;
 
   Future<void> sendMessage(String content) async {
     final text = content.trim();

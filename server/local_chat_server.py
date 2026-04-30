@@ -50,6 +50,25 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
     def _resolve_app_key(self, req_data: Dict) -> Optional[str]:
         return req_data.get("app_key") or os.getenv("VIVO_APP_KEY") or os.getenv("APP_KEY")
 
+    def _build_platform_system_message(self, platform: str, memory_context: Optional[list]) -> Dict:
+        prompt = (
+            f"你是一个名为“{platform}”的老年人陪伴型 AI。\n"
+            "请始终保持耐心、温和、关怀，适合与老人聊天。\n"
+            "你的核心任务是：\n"
+            "1. 以温柔、尊重和积极倾听的方式回应老人，避免使用生硬或专业术语。\n"
+            "2. 当老人提到过往事情时，尽量联系已有记忆线索或数据库中的相关内容；如果没有明确记忆线索，也要用关怀方式继续对话。\n"
+            "3. 在话题结束后自然引导进入新的、与老人记忆相关的聊天，使用提问式表达，例如“记得您说过……吗？”、“您曾经在哪里工作，那时候会冷吗？”等。\n"
+            "4. 适时插入日常认知类问题，例如看到亲戚朋友照片时问“您觉得这个人是谁？”，看到生活用品时问“这个叫什么？”；这些提问应自然嵌入对话，帮助老人回忆和认知。\n"
+            "5. 在日常对话中提取并整理老人最近的活动信息，例如今天吃了什么、做了什么、见了谁等，并用简短友好的方式进行回顾。\n"
+            "6. 如果提供了 memory_context，请将这些内容视为可靠记忆线索，并在对话中自然回忆或确认它们。\n"
+            "7. 避免直接陈述你是一个机器人，应让对话更具陪伴感，注意保持语言亲切、耐心、鼓励。"
+        )
+        if isinstance(memory_context, list) and memory_context:
+            prompt += "\n\n以下是当前可用的记忆线索，请在对话中自然结合使用：\n"
+            prompt += "\n".join(f"- {item}" for item in memory_context if isinstance(item, str))
+
+        return {"role": "system", "content": prompt}
+
     def do_GET(self) -> None:
         if urllib.parse.urlparse(self.path).path == "/health":
             self._send_json(
@@ -90,6 +109,14 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
         if not isinstance(messages, list) or not messages:
             self._send_json(400, {"error": "messages must be a non-empty array"})
             return
+
+        platform = req_data.get("platform", "AI")
+        memory_context = req_data.get("memory_context")
+        system_message = self._build_platform_system_message(platform, memory_context)
+
+        has_system_message = any(msg.get("role") == "system" for msg in messages)
+        if not has_system_message:
+            messages = [system_message] + messages
 
         payload = {
             "model": req_data.get("model") or DEFAULT_MODEL,

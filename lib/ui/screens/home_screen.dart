@@ -224,20 +224,6 @@ class _ChatCompanionCard extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: 10),
-              Container(
-                width: 46,
-                height: 46,
-                decoration: BoxDecoration(
-                  color: AppTheme.accentSoft,
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                child: const Icon(
-                  Icons.wb_sunny_rounded,
-                  color: AppTheme.accent,
-                  size: 28,
-                ),
-              ),
             ],
           ),
           const SizedBox(height: 14),
@@ -302,25 +288,13 @@ class _PromptCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(
-                isCognitive ? Icons.psychology_alt_rounded : Icons.eco_rounded,
-                color: isCognitive ? AppTheme.accent : AppTheme.primaryDeep,
-                size: 24,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  message.title ?? '慢慢想一想',
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w900,
-                    color: AppTheme.text,
-                  ),
-                ),
-              ),
-            ],
+          Text(
+            message.title ?? '慢慢想一想',
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+              color: AppTheme.text,
+            ),
           ),
           if (message.cueLabel != null) ...[
             const SizedBox(height: 8),
@@ -432,7 +406,7 @@ class _TypingIndicator extends StatelessWidget {
           ),
           SizedBox(width: 10),
           Text(
-            '暖忆正在认真听您说...',
+            '拾忆正在认真听您说...',
             style: TextStyle(color: AppTheme.textSoft, fontSize: 15),
           ),
         ],
@@ -463,14 +437,12 @@ class _BrandHeader extends StatelessWidget {
           Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              const _CompanionAvatar(),
-              const SizedBox(width: 12),
               const Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '暖忆陪伴',
+                      '拾忆',
                       style: TextStyle(
                         fontSize: 28,
                         height: 1.1,
@@ -502,7 +474,6 @@ class _BrandHeader extends StatelessWidget {
             children: [
               Expanded(
                 child: _NavCard(
-                  icon: Icons.photo_album_rounded,
                   title: '回忆图鉴',
                   subtitle: '看看珍贵的照片',
                   selected: activeView == _AppView.memory,
@@ -512,7 +483,6 @@ class _BrandHeader extends StatelessWidget {
               const SizedBox(width: 12),
               Expanded(
                 child: _NavCard(
-                  icon: Icons.event_note_rounded,
                   title: '最近记录',
                   subtitle: '看看今天的点滴',
                   selected: activeView == _AppView.recent,
@@ -545,7 +515,6 @@ class _MemoryBookView extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: const [
               _SectionTitle(
-                icon: Icons.auto_stories_rounded,
                 title: '慢慢翻看的老相册',
                 subtitle: '每一张照片，都可以陪您好好想一想',
               ),
@@ -554,14 +523,12 @@ class _MemoryBookView extends StatelessWidget {
                 title: '春天里的自行车',
                 year: '1986',
                 accent: AppTheme.primary,
-                icon: Icons.directions_bike_rounded,
               ),
               SizedBox(height: 12),
               _MemoryPhotoCard(
                 title: '老家小院的午后',
                 year: '1983',
                 accent: AppTheme.accent,
-                icon: Icons.home_rounded,
               ),
             ],
           ),
@@ -634,34 +601,25 @@ class _RecentNotesView extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: const [
               _SectionTitle(
-                icon: Icons.favorite_rounded,
                 title: '今天的记录',
                 subtitle: '最近发生的点滴',
               ),
               SizedBox(height: 16),
               _RecordItem(
-                icon: Icons.photo_rounded,
                 title: '提到女儿的旧照片',
                 description: '看到老照片时，笑着说起女儿小时候的事。',
-                color: AppTheme.primary,
               ),
               _RecordItem(
-                icon: Icons.ramen_dining_rounded,
                 title: '说中午吃了面',
                 description: '午饭吃了面条，胃口不错。',
-                color: AppTheme.accent,
               ),
               _RecordItem(
-                icon: Icons.directions_bike_rounded,
                 title: '聊到以前骑自行车',
                 description: '说以前常骑车去上班，很轻松很快乐。',
-                color: Color(0xFF8FB46D),
               ),
               _RecordItem(
-                icon: Icons.night_shelter_rounded,
                 title: '午休情况正常',
                 description: '中午休息得不错，精神挺好。',
-                color: Color(0xFF7FA6A2),
               ),
             ],
           ),
@@ -853,16 +811,16 @@ class _BottomVoiceBar extends StatelessWidget {
           SizedBox(
             width: 62,
             height: 62,
-            child: IconButton(
-              tooltip: '键盘输入',
+            child: TextButton(
               onPressed: onKeyboardTap,
-              style: IconButton.styleFrom(
+              style: TextButton.styleFrom(
                 backgroundColor: keyboardOpen ? AppTheme.successSoft : Colors.white,
                 foregroundColor: keyboardOpen ? AppTheme.primaryDeep : AppTheme.textSoft,
+                textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
                 side: const BorderSide(color: AppTheme.border),
               ),
-              icon: const Icon(Icons.keyboard_alt_rounded, size: 28),
+              child: const Text('键盘'),
             ),
           ),
           const SizedBox(width: 10),
@@ -886,10 +844,8 @@ class _BottomVoiceBar extends StatelessWidget {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Icon(Icons.mic_rounded, color: Colors.white, size: 34),
-                    const SizedBox(height: 7),
                     Text(
-                      isSending ? '正在回应' : '按这里说话',
+                      isSending ? '正在回应' : '按住这里说话',
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 22,
@@ -910,7 +866,22 @@ class _BottomVoiceBar extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 72),
+          const SizedBox(width: 10),
+          SizedBox(
+            width: 62,
+            height: 62,
+            child: TextButton(
+              onPressed: () {},
+              style: TextButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: AppTheme.primaryDeep,
+                textStyle: const TextStyle(fontSize: 34, fontWeight: FontWeight.w900),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                side: const BorderSide(color: AppTheme.border),
+              ),
+              child: const Text('+'),
+            ),
+          ),
         ],
       ),
     );
@@ -957,59 +928,13 @@ class _StatusPill extends StatelessWidget {
         borderRadius: BorderRadius.circular(99),
         border: Border.all(color: const Color(0xFFD4EEE9)),
       ),
-      child: const Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.shield_rounded, size: 19, color: AppTheme.primaryDeep),
-          SizedBox(width: 7),
-          Text(
-            '离线陪伴 · 本地守护',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-              color: AppTheme.primaryDeep,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _CompanionAvatar extends StatelessWidget {
-  const _CompanionAvatar();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 58,
-      height: 58,
-      decoration: BoxDecoration(
-        color: AppTheme.accentSoft,
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: AppTheme.border),
-      ),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          const Icon(
-            Icons.volunteer_activism_rounded,
-            color: AppTheme.primaryDeep,
-            size: 31,
-          ),
-          Positioned(
-            right: 10,
-            top: 9,
-            child: Container(
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(
-                color: AppTheme.accent,
-                borderRadius: BorderRadius.circular(99),
-              ),
-            ),
-          ),
-        ],
+      child: const Text(
+        '离线陪伴 · 本地守护',
+        style: TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w800,
+          color: AppTheme.primaryDeep,
+        ),
       ),
     );
   }
@@ -1017,14 +942,12 @@ class _CompanionAvatar extends StatelessWidget {
 
 class _NavCard extends StatelessWidget {
   const _NavCard({
-    required this.icon,
     required this.title,
     required this.subtitle,
     required this.selected,
     required this.onTap,
   });
 
-  final IconData icon;
   final String title;
   final String subtitle;
   final bool selected;
@@ -1056,8 +979,6 @@ class _NavCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(icon, color: selected ? AppTheme.primaryDeep : AppTheme.accent, size: 28),
-            const SizedBox(height: 8),
             Text(
               title,
               style: const TextStyle(
@@ -1089,7 +1010,6 @@ class _BackLine extends StatelessWidget {
     return Row(
       children: [
         _IconTextButton(
-          icon: Icons.arrow_back_rounded,
           label: '返回',
           onTap: onBack,
         ),
@@ -1116,12 +1036,12 @@ class _BackLine extends StatelessWidget {
 
 class _SectionTitle extends StatelessWidget {
   const _SectionTitle({
-    required this.icon,
+    this.icon,
     required this.title,
     required this.subtitle,
   });
 
-  final IconData icon;
+  final IconData? icon;
   final String title;
   final String subtitle;
 
@@ -1130,16 +1050,18 @@ class _SectionTitle extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            color: AppTheme.successSoft,
-            borderRadius: BorderRadius.circular(16),
+        if (icon != null) ...[
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppTheme.successSoft,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Icon(icon, color: AppTheme.primaryDeep, size: 25),
           ),
-          child: Icon(icon, color: AppTheme.primaryDeep, size: 25),
-        ),
-        const SizedBox(width: 12),
+          const SizedBox(width: 12),
+        ],
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1175,13 +1097,11 @@ class _MemoryPhotoCard extends StatelessWidget {
     required this.title,
     required this.year,
     required this.accent,
-    required this.icon,
   });
 
   final String title;
   final String year;
   final Color accent;
-  final IconData icon;
 
   @override
   Widget build(BuildContext context) {
@@ -1202,15 +1122,15 @@ class _MemoryPhotoCard extends StatelessWidget {
               borderRadius: BorderRadius.circular(18),
               border: Border.all(color: accent.withOpacity(0.22)),
             ),
-            child: Stack(
-              children: [
-                Center(child: Icon(icon, size: 38, color: accent)),
-                Positioned(
-                  right: 8,
-                  top: 8,
-                  child: Icon(Icons.eco_rounded, size: 17, color: accent.withOpacity(0.8)),
+            child: Center(
+              child: Text(
+                year,
+                style: TextStyle(
+                  color: accent,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w900,
                 ),
-              ],
+              ),
             ),
           ),
           const SizedBox(width: 14),
@@ -1262,10 +1182,14 @@ class _SoftPortrait extends StatelessWidget {
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: AppTheme.border),
       ),
-      child: const Icon(
-        Icons.face_retouching_natural_rounded,
-        color: AppTheme.primaryDeep,
-        size: 38,
+      alignment: Alignment.center,
+      child: const Text(
+        '照片',
+        style: TextStyle(
+          color: AppTheme.primaryDeep,
+          fontSize: 18,
+          fontWeight: FontWeight.w900,
+        ),
       ),
     );
   }
@@ -1298,77 +1222,46 @@ class _AnswerButton extends StatelessWidget {
 
 class _RecordItem extends StatelessWidget {
   const _RecordItem({
-    required this.icon,
     required this.title,
     required this.description,
-    required this.color,
   });
 
-  final IconData icon;
   final String title;
   final String description;
-  final Color color;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Column(
-            children: [
-              Container(
-                width: 42,
-                height: 42,
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.16),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Icon(icon, color: color, size: 24),
-              ),
-              Container(
-                width: 2,
-                height: 42,
-                margin: const EdgeInsets.only(top: 6),
-                color: AppTheme.border,
-              ),
-            ],
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(14, 12, 14, 13),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(22),
-                border: Border.all(color: AppTheme.border),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w900,
-                      color: AppTheme.text,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    description,
-                    style: const TextStyle(
-                      fontSize: 15,
-                      height: 1.45,
-                      color: AppTheme.textSoft,
-                    ),
-                  ),
-                ],
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 13),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: AppTheme.border),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+                color: AppTheme.text,
               ),
             ),
-          ),
-        ],
+            const SizedBox(height: 6),
+            Text(
+              description,
+              style: const TextStyle(
+                fontSize: 15,
+                height: 1.45,
+                color: AppTheme.textSoft,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1510,34 +1403,42 @@ class _NetworkRow extends StatelessWidget {
 
 class _IconTextButton extends StatelessWidget {
   const _IconTextButton({
-    required this.icon,
+    this.icon,
     required this.label,
     required this.onTap,
   });
 
-  final IconData icon;
+  final IconData? icon;
   final String label;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
+    final style = TextButton.styleFrom(
+      backgroundColor: AppTheme.cardWhite,
+      foregroundColor: AppTheme.text,
+      textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: const BorderSide(color: AppTheme.border),
+      ),
+    );
+
     return SizedBox(
       height: 50,
-      child: TextButton.icon(
-        onPressed: onTap,
-        icon: Icon(icon, size: 20),
-        label: Text(label),
-        style: TextButton.styleFrom(
-          backgroundColor: AppTheme.cardWhite,
-          foregroundColor: AppTheme.text,
-          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-            side: const BorderSide(color: AppTheme.border),
-          ),
-        ),
-      ),
+      child: icon == null
+          ? TextButton(
+              onPressed: onTap,
+              style: style,
+              child: Text(label),
+            )
+          : TextButton.icon(
+              onPressed: onTap,
+              icon: Icon(icon, size: 20),
+              label: Text(label),
+              style: style,
+            ),
     );
   }
 }

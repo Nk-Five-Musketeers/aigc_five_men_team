@@ -1,7 +1,7 @@
 class AppConstants {
   AppConstants._();
 
-  static const String appName = '暖忆陪伴';
+  static const String appName = '拾忆';
   static const String modelId = 'Volc-DeepSeek-V3.2';
 
   static const String apiBaseUrl = String.fromEnvironment(

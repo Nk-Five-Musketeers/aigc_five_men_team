@@ -18,6 +18,7 @@ devtools_options.yaml
 # Misc
 *.log
 *.tmp
+debug_memory_export.json
 .ui_reference/
 __pycache__/
 *.pyc

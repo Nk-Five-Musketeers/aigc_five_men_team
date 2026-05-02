@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../config/theme.dart';
 import '../../data/models/chat_message.dart';
+import '../../data/models/daily_note.dart';
 import '../../logic/chat_provider.dart';
 
 enum _AppView { home, memory, recent, settings }
@@ -82,7 +83,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         Expanded(
                           child: AnimatedSwitcher(
                             duration: const Duration(milliseconds: 240),
-                            child: _buildView(),
+                            child: _buildView(chat),
                           ),
                         ),
                         if (_keyboardOpen)
@@ -112,7 +113,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildView() {
+  Widget _buildView(ChatProvider chat) {
     switch (_view) {
       case _AppView.home:
         return const _HomeCompanionView(key: ValueKey('home'));
@@ -124,6 +125,7 @@ class _HomeScreenState extends State<HomeScreen> {
       case _AppView.recent:
         return _RecentNotesView(
           key: const ValueKey('recent'),
+          notes: chat.dailyNotes,
           onBack: () => _showView(_AppView.home),
         );
       case _AppView.settings:
@@ -584,8 +586,13 @@ class _MemoryBookView extends StatelessWidget {
 }
 
 class _RecentNotesView extends StatelessWidget {
-  const _RecentNotesView({super.key, required this.onBack});
+  const _RecentNotesView({
+    super.key,
+    required this.notes,
+    required this.onBack,
+  });
 
+  final List<DailyNote> notes;
   final VoidCallback onBack;
 
   @override
@@ -599,28 +606,36 @@ class _RecentNotesView extends StatelessWidget {
           padding: const EdgeInsets.all(18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              _SectionTitle(
+            children: [
+              const _SectionTitle(
                 title: '今天的记录',
                 subtitle: '最近发生的点滴',
               ),
-              SizedBox(height: 16),
-              _RecordItem(
-                title: '提到女儿的旧照片',
-                description: '看到老照片时，笑着说起女儿小时候的事。',
-              ),
-              _RecordItem(
-                title: '说中午吃了面',
-                description: '午饭吃了面条，胃口不错。',
-              ),
-              _RecordItem(
-                title: '聊到以前骑自行车',
-                description: '说以前常骑车去上班，很轻松很快乐。',
-              ),
-              _RecordItem(
-                title: '午休情况正常',
-                description: '中午休息得不错，精神挺好。',
-              ),
+              const SizedBox(height: 16),
+              if (notes.isEmpty) ...const [
+                _RecordItem(
+                  title: '提到女儿的旧照片',
+                  description: '看到老照片时，笑着说起女儿小时候的事。',
+                ),
+                _RecordItem(
+                  title: '说中午吃了面',
+                  description: '午饭吃了面条，胃口不错。',
+                ),
+                _RecordItem(
+                  title: '聊到以前骑自行车',
+                  description: '说以前常骑车去上班，很轻松很快乐。',
+                ),
+                _RecordItem(
+                  title: '午休情况正常',
+                  description: '中午休息得不错，精神挺好。',
+                ),
+              ] else
+                ...notes.map(
+                  (note) => _RecordItem(
+                    title: note.title,
+                    description: note.description,
+                  ),
+                ),
             ],
           ),
         ),

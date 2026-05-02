@@ -176,7 +176,12 @@ def main() -> None:
     has_key = bool(os.getenv("VIVO_APP_KEY") or os.getenv("APP_KEY"))
     print(f"Chat proxy is running on http://{HOST}:{PORT}")
     print(f"Server AppKey loaded: {has_key}")
-    server.serve_forever()
+    print("Press Ctrl+C to stop.", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        # Ctrl+C：正常停止长时间运行的 HTTP 服务，不是异常崩溃
+        print("\nStopped (KeyboardInterrupt). Local chat proxy exited.", flush=True)
 
 
 if __name__ == "__main__":

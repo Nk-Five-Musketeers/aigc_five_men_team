@@ -3,9 +3,12 @@ import 'package:provider/provider.dart';
 
 import '../../config/theme.dart';
 import '../../data/models/chat_message.dart';
+import '../../data/models/nearby_person.dart';
+import '../../data/models/relation_conflict_record.dart';
+import '../../data/local_db/local_database.dart';
 import '../../logic/chat_provider.dart';
 
-enum _AppView { home, memory, recent, settings }
+enum _AppView { home, memory, recent, nearby, settings }
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -18,7 +21,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _messageController = TextEditingController();
 
   _AppView _view = _AppView.home;
-  bool _keyboardOpen = false;
+  bool _keyboardOpen = true;
   bool _networkOnline = false;
   String _speechMode = '自动识别';
 
@@ -79,6 +82,13 @@ class _HomeScreenState extends State<HomeScreen> {
                           onMemoryTap: () => _showView(_AppView.memory),
                           onRecentTap: () => _showView(_AppView.recent),
                         ),
+                        if (chat.pendingRelationConflicts.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          _RelationConflictBanner(
+                            conflict: chat.pendingRelationConflicts.first,
+                          ),
+                          const SizedBox(height: 8),
+                        ],
                         Expanded(
                           child: AnimatedSwitcher(
                             duration: const Duration(milliseconds: 240),
@@ -113,6 +123,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildView() {
+    final chat = context.watch<ChatProvider>();
     switch (_view) {
       case _AppView.home:
         return const _HomeCompanionView(key: ValueKey('home'));
@@ -123,19 +134,62 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       case _AppView.recent:
         return _RecentNotesView(
-          key: const ValueKey('recent'),
+          key: ValueKey('recent-${chat.activeConversationId}'),
+          conversationId: chat.activeConversationId,
           onBack: () => _showView(_AppView.home),
         );
       case _AppView.settings:
         return _SettingsView(
-          key: const ValueKey('settings'),
+          key: ValueKey('settings-${chat.activeUserId}'),
           speechMode: _speechMode,
           networkOnline: _networkOnline,
+          activeUserId: chat.activeUserId,
           onBack: () => _showView(_AppView.home),
+          onNearbyTap: () => _showView(_AppView.nearby),
           onModeSelected: (value) => setState(() => _speechMode = value),
           onNetworkTap: () => setState(() => _networkOnline = !_networkOnline),
+          onAddLocalProfile: _promptAddLocalProfile,
+        );
+      case _AppView.nearby:
+        return _NearbyPeopleView(
+          key: ValueKey('nearby-${chat.activeUserId}'),
+          ownerUserId: chat.activeUserId,
+          onBack: () => _showView(_AppView.settings),
         );
     }
+  }
+
+  Future<void> _promptAddLocalProfile() async {
+    final controller = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('添加使用者'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '称呼或姓名',
+            hintText: '例如：李伯伯',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('创建'),
+          ),
+        ],
+      ),
+    );
+    final name = controller.text.trim();
+    controller.dispose();
+    if (ok != true || name.isEmpty || !mounted) return;
+    await context.read<ChatProvider>().createLocalProfile(name);
+    if (mounted) setState(() {});
   }
 
   BoxDecoration _phoneDecoration(bool compact) {
@@ -558,7 +612,8 @@ class _MemoryBookView extends StatelessWidget {
                         SizedBox(height: 4),
                         Text(
                           '可以慢慢想，不着急',
-                          style: TextStyle(fontSize: 16, color: AppTheme.textSoft),
+                          style:
+                              TextStyle(fontSize: 16, color: AppTheme.textSoft),
                         ),
                       ],
                     ),
@@ -583,43 +638,143 @@ class _MemoryBookView extends StatelessWidget {
   }
 }
 
-class _RecentNotesView extends StatelessWidget {
-  const _RecentNotesView({super.key, required this.onBack});
+class _RecentNotesView extends StatefulWidget {
+  const _RecentNotesView({
+    super.key,
+    required this.conversationId,
+    required this.onBack,
+  });
 
+  final String conversationId;
   final VoidCallback onBack;
+
+  @override
+  State<_RecentNotesView> createState() => _RecentNotesViewState();
+}
+
+class _RecentNotesViewState extends State<_RecentNotesView> {
+  late Future<List<Map<String, dynamic>>> _historyFuture;
+  static const int _historyPageSize = 120;
+
+  @override
+  void initState() {
+    super.initState();
+    _historyFuture = _loadHistory();
+  }
+
+  @override
+  void didUpdateWidget(_RecentNotesView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.conversationId != widget.conversationId) {
+      _refresh();
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _loadHistory() async {
+    return LocalDatabase.getRecentMessagesForConversation(
+      widget.conversationId,
+      limit: _historyPageSize,
+    );
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _historyFuture = _loadHistory();
+    });
+  }
+
+  Future<void> _confirmClearAll() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('清空聊天历史'),
+        content: const Text(
+          '将删除本机中该会话的全部聊天记录，且不可恢复。确定要继续吗？',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    await context.read<ChatProvider>().clearHomeConversationHistory();
+    if (!mounted) return;
+    await _refresh();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('已全部清空')),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return ListView(
       padding: const EdgeInsets.only(bottom: 14),
       children: [
-        _BackLine(title: '最近记录', onBack: onBack),
+        _BackLine(title: '最近记录', onBack: widget.onBack),
         const SizedBox(height: 14),
         _WarmCard(
           padding: const EdgeInsets.all(18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              _SectionTitle(
-                title: '今天的记录',
-                subtitle: '最近发生的点滴',
+            children: [
+              const _SectionTitle(
+                title: '聊天历史',
+                subtitle: '自动从本地数据库读取',
               ),
-              SizedBox(height: 16),
-              _RecordItem(
-                title: '提到女儿的旧照片',
-                description: '看到老照片时，笑着说起女儿小时候的事。',
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton.icon(
+                    onPressed: _confirmClearAll,
+                    icon: const Icon(Icons.delete_sweep_outlined),
+                    label: const Text('清空全部'),
+                    style: TextButton.styleFrom(foregroundColor: AppTheme.textSoft),
+                  ),
+                  TextButton.icon(
+                    onPressed: _refresh,
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: const Text('刷新'),
+                  ),
+                ],
               ),
-              _RecordItem(
-                title: '说中午吃了面',
-                description: '午饭吃了面条，胃口不错。',
-              ),
-              _RecordItem(
-                title: '聊到以前骑自行车',
-                description: '说以前常骑车去上班，很轻松很快乐。',
-              ),
-              _RecordItem(
-                title: '午休情况正常',
-                description: '中午休息得不错，精神挺好。',
+              const SizedBox(height: 8),
+              FutureBuilder<List<Map<String, dynamic>>>(
+                future: _historyFuture,
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 20),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  final rows = snapshot.data!;
+                  if (rows.isEmpty) {
+                    return const Text(
+                      '当前还没有聊天历史，先去首页聊几句吧。',
+                      style: TextStyle(fontSize: 16, color: AppTheme.textSoft),
+                    );
+                  }
+                  return ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: rows.length,
+                    itemBuilder: (context, index) {
+                      return _ChatHistoryItem(
+                        row: rows[index],
+                        onDeleted: _refresh,
+                      );
+                    },
+                  );
+                },
               ),
             ],
           ),
@@ -629,21 +784,322 @@ class _RecentNotesView extends StatelessWidget {
   }
 }
 
+class _ChatHistoryItem extends StatelessWidget {
+  const _ChatHistoryItem({
+    required this.row,
+    required this.onDeleted,
+  });
+
+  final Map<String, dynamic> row;
+  final VoidCallback onDeleted;
+
+  Future<void> _confirmDelete(BuildContext context) async {
+    final id = row['id'] as String?;
+    if (id == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除这条记录'),
+        content: const Text('仅从本机删除该条聊天内容，删除后无法恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    await context.read<ChatProvider>().deleteMessageById(id);
+    if (!context.mounted) return;
+    onDeleted();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('已删除')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isUser = (row['user_id'] as String?) != null;
+    final timestamp = DateTime.tryParse(row['timestamp'] as String? ?? '');
+    final role = isUser ? '我' : '拾忆';
+    final timeText = timestamp == null
+        ? '未知时间'
+        : '${timestamp.month.toString().padLeft(2, '0')}-${timestamp.day.toString().padLeft(2, '0')} '
+            '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+    return _RecordItem(
+      title: '$role · $timeText',
+      description: (row['content'] as String? ?? '').trim().isEmpty
+          ? '(空消息)'
+          : (row['content'] as String),
+      trailing: IconButton(
+        tooltip: '删除',
+        onPressed: () => _confirmDelete(context),
+        icon: const Icon(Icons.delete_outline_rounded, color: AppTheme.textSoft),
+      ),
+    );
+  }
+}
+
+class _NearbyPeopleView extends StatefulWidget {
+  const _NearbyPeopleView({
+    super.key,
+    required this.ownerUserId,
+    required this.onBack,
+  });
+
+  final String ownerUserId;
+  final VoidCallback onBack;
+
+  @override
+  State<_NearbyPeopleView> createState() => _NearbyPeopleViewState();
+}
+
+class _NearbyPeopleViewState extends State<_NearbyPeopleView> {
+  late Future<List<NearbyPersonModel>> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _loadNearbyPeople();
+  }
+
+  @override
+  void didUpdateWidget(_NearbyPeopleView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.ownerUserId != widget.ownerUserId) {
+      _refresh();
+    }
+  }
+
+  Future<List<NearbyPersonModel>> _loadNearbyPeople() async {
+    final rows =
+        await LocalDatabase.getNearbyPeopleForUser(widget.ownerUserId);
+    return rows.map(NearbyPersonModel.fromMap).toList();
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _future = _loadNearbyPeople();
+    });
+  }
+
+  Future<void> _addNearbyPerson() async {
+    final nameController = TextEditingController();
+    final relationController = TextEditingController();
+    final phoneController = TextEditingController();
+    bool isEmergency = false;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('添加周围人'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(labelText: '姓名'),
+                ),
+                TextField(
+                  controller: relationController,
+                  decoration: const InputDecoration(labelText: '关系'),
+                ),
+                TextField(
+                  controller: phoneController,
+                  decoration: const InputDecoration(labelText: '联系电话'),
+                ),
+                SwitchListTile(
+                  value: isEmergency,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('紧急联系人'),
+                  onChanged: (value) => setState(() => isEmergency = value),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed != true || nameController.text.trim().isEmpty) return;
+    await LocalDatabase.upsertNearbyPerson({
+      'id': 'nearby_${DateTime.now().microsecondsSinceEpoch}',
+      'owner_user_id': widget.ownerUserId,
+      'name': nameController.text.trim(),
+      'relation': relationController.text.trim(),
+      'phone': phoneController.text.trim(),
+      'is_emergency_contact': isEmergency ? 1 : 0,
+    });
+    if (!mounted) return;
+    await _refresh();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 14),
+      children: [
+        _BackLine(title: '周围人信息', onBack: widget.onBack),
+        const SizedBox(height: 14),
+        _WarmCard(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const _SectionTitle(
+                icon: Icons.people_alt_rounded,
+                title: '附近与亲友联系人',
+                subtitle: '本地保存，离线也可查看',
+              ),
+              const SizedBox(height: 14),
+              Align(
+                alignment: Alignment.centerRight,
+                child: FilledButton.icon(
+                  onPressed: _addNearbyPerson,
+                  icon: const Icon(Icons.add),
+                  label: const Text('添加'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              FutureBuilder<List<NearbyPersonModel>>(
+                future: _future,
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 20),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  final people = snapshot.data!;
+                  if (people.isEmpty) {
+                    return const Text(
+                      '还没有周围人记录，点击上方“添加”即可开始。',
+                      style: TextStyle(fontSize: 16, color: AppTheme.textSoft),
+                    );
+                  }
+                  return Column(
+                    children: people
+                        .map(
+                          (person) => _NearbyPersonTile(
+                            person: person,
+                            onDelete: () async {
+                              await LocalDatabase.removeNearbyPerson(person.id);
+                              if (!mounted) return;
+                              await _refresh();
+                            },
+                          ),
+                        )
+                        .toList(),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _NearbyPersonTile extends StatelessWidget {
+  const _NearbyPersonTile({required this.person, required this.onDelete});
+
+  final NearbyPersonModel person;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${person.name ?? '未命名'}${person.relation == null || person.relation!.isEmpty ? '' : ' · ${person.relation}'}',
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w900,
+                    color: AppTheme.text,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  person.phone == null || person.phone!.isEmpty
+                      ? '未填写联系方式'
+                      : person.phone!,
+                  style:
+                      const TextStyle(fontSize: 15, color: AppTheme.textSoft),
+                ),
+                if (person.isEmergencyContact)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 4),
+                    child: Text(
+                      '紧急联系人',
+                      style: TextStyle(
+                        color: AppTheme.primaryDeep,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          IconButton(
+            onPressed: onDelete,
+            icon: const Icon(Icons.delete_outline_rounded),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _SettingsView extends StatelessWidget {
   const _SettingsView({
     super.key,
     required this.speechMode,
     required this.networkOnline,
+    required this.activeUserId,
     required this.onBack,
+    required this.onNearbyTap,
     required this.onModeSelected,
     required this.onNetworkTap,
+    required this.onAddLocalProfile,
   });
 
   final String speechMode;
   final bool networkOnline;
+  final String activeUserId;
   final VoidCallback onBack;
+  final VoidCallback onNearbyTap;
   final ValueChanged<String> onModeSelected;
   final VoidCallback onNetworkTap;
+  final VoidCallback onAddLocalProfile;
 
   @override
   Widget build(BuildContext context) {
@@ -656,16 +1112,36 @@ class _SettingsView extends StatelessWidget {
           padding: const EdgeInsets.all(18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              _SectionTitle(
+            children: [
+              const _SectionTitle(
+                icon: Icons.person_rounded,
+                title: '使用者与数据划分',
+                subtitle: '聊天记录、人物关系与周围人均按当前使用者分开保存',
+              ),
+              const SizedBox(height: 12),
+              _SettingsUserSwitcher(
+                activeUserId: activeUserId,
+                onAddProfile: onAddLocalProfile,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        _WarmCard(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const _SectionTitle(
                 icon: Icons.shield_rounded,
                 title: '本地守护',
                 subtitle: '提前录入，后续聊天可继续补充',
               ),
-              SizedBox(height: 16),
-              _SettingsRow(title: '基本信息'),
-              _SettingsRow(title: '家庭照片'),
-              _SettingsRow(title: '重要经历'),
+              const SizedBox(height: 16),
+              const _SettingsRow(title: '基本信息'),
+              const _SettingsRow(title: '家庭照片'),
+              const _SettingsRow(title: '重要经历'),
+              _SettingsRow(title: '周围人信息', onTap: onNearbyTap),
             ],
           ),
         ),
@@ -715,7 +1191,166 @@ class _SettingsView extends StatelessWidget {
             ],
           ),
         ),
+        const SizedBox(height: 14),
+        FutureBuilder<String>(
+          future: LocalDatabase.getDatabasePathForDebug(),
+          builder: (context, snapshot) {
+            final path = snapshot.data ?? '读取中...';
+            return _WarmCard(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const _SectionTitle(
+                    icon: Icons.storage_rounded,
+                    title: '本地数据库文件',
+                    subtitle: '文件名 bluecare.db，可用下方完整路径在资源管理器中打开',
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    LocalDatabase.storageHint(),
+                    style:
+                        const TextStyle(fontSize: 14, color: AppTheme.textSoft),
+                  ),
+                  const SizedBox(height: 8),
+                  SelectableText(
+                    path,
+                    style: const TextStyle(fontSize: 14, color: AppTheme.text),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
       ],
+    );
+  }
+}
+
+class _RelationConflictBanner extends StatelessWidget {
+  const _RelationConflictBanner({required this.conflict});
+
+  final RelationConflictRecord conflict;
+
+  @override
+  Widget build(BuildContext context) {
+    return _WarmCard(
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.warning_amber_rounded, color: AppTheme.primaryDeep),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '人物信息与聊天内容不一致',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 17,
+                    color: AppTheme.text,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '${conflict.personName} · ${conflict.fieldLabel}',
+            style: const TextStyle(fontSize: 15, color: AppTheme.textSoft),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '原有：${conflict.oldValue ?? '（空）'}\n新提到：${conflict.newValue ?? '（空）'}',
+            style: const TextStyle(fontSize: 15, height: 1.45, color: AppTheme.text),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => context
+                      .read<ChatProvider>()
+                      .resolveRelationConflictUi(conflict.id, false),
+                  child: const Text('保留原有'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: FilledButton(
+                  onPressed: () => context
+                      .read<ChatProvider>()
+                      .resolveRelationConflictUi(conflict.id, true),
+                  child: const Text('采用新信息'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsUserSwitcher extends StatelessWidget {
+  const _SettingsUserSwitcher({
+    required this.activeUserId,
+    required this.onAddProfile,
+  });
+
+  final String activeUserId;
+  final VoidCallback onAddProfile;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<Map<String, dynamic>>>(
+      future: LocalDatabase.listUsers(),
+      builder: (context, snapshot) {
+        final users = snapshot.data ?? [];
+        if (users.isEmpty) {
+          return const Text(
+            '暂无使用者记录',
+            style: TextStyle(fontSize: 16, color: AppTheme.textSoft),
+          );
+        }
+        final ids = users.map((u) => u['id'] as String).toSet();
+        final value =
+            ids.contains(activeUserId) ? activeUserId : users.first['id'] as String;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            DropdownButtonFormField<String>(
+              value: value,
+              decoration: const InputDecoration(
+                labelText: '当前使用者',
+                filled: true,
+                fillColor: Colors.white,
+              ),
+              items: users.map((u) {
+                final id = u['id'] as String;
+                final name = (u['name'] as String?)?.trim();
+                return DropdownMenuItem<String>(
+                  value: id,
+                  child: Text(name == null || name.isEmpty ? id : name),
+                );
+              }).toList(),
+              onChanged: (v) {
+                if (v != null) {
+                  context.read<ChatProvider>().setActiveUserId(v);
+                }
+              },
+            ),
+            const SizedBox(height: 10),
+            TextButton.icon(
+              onPressed: onAddProfile,
+              icon: const Icon(Icons.person_add_alt_rounded),
+              label: const Text('添加另一位使用者'),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -751,7 +1386,8 @@ class _TypingPanel extends StatelessWidget {
                 hintStyle: const TextStyle(color: AppTheme.textSoft),
                 filled: true,
                 fillColor: Colors.white,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(20),
                   borderSide: const BorderSide(color: AppTheme.border),
@@ -762,7 +1398,8 @@ class _TypingPanel extends StatelessWidget {
                 ),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(20),
-                  borderSide: const BorderSide(color: AppTheme.primary, width: 1.5),
+                  borderSide:
+                      const BorderSide(color: AppTheme.primary, width: 1.5),
                 ),
               ),
             ),
@@ -775,11 +1412,13 @@ class _TypingPanel extends StatelessWidget {
               style: FilledButton.styleFrom(
                 backgroundColor: AppTheme.primary,
                 foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20)),
               ),
               child: Text(
                 isSending ? '等待' : '发送',
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+                style:
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
               ),
             ),
           ),
@@ -814,10 +1453,14 @@ class _BottomVoiceBar extends StatelessWidget {
             child: TextButton(
               onPressed: onKeyboardTap,
               style: TextButton.styleFrom(
-                backgroundColor: keyboardOpen ? AppTheme.successSoft : Colors.white,
-                foregroundColor: keyboardOpen ? AppTheme.primaryDeep : AppTheme.textSoft,
-                textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                backgroundColor:
+                    keyboardOpen ? AppTheme.successSoft : Colors.white,
+                foregroundColor:
+                    keyboardOpen ? AppTheme.primaryDeep : AppTheme.textSoft,
+                textStyle:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(22)),
                 side: const BorderSide(color: AppTheme.border),
               ),
               child: const Text('键盘'),
@@ -875,8 +1518,10 @@ class _BottomVoiceBar extends StatelessWidget {
               style: TextButton.styleFrom(
                 backgroundColor: Colors.white,
                 foregroundColor: AppTheme.primaryDeep,
-                textStyle: const TextStyle(fontSize: 34, fontWeight: FontWeight.w900),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                textStyle:
+                    const TextStyle(fontSize: 34, fontWeight: FontWeight.w900),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(22)),
                 side: const BorderSide(color: AppTheme.border),
               ),
               child: const Text('+'),
@@ -1158,7 +1803,8 @@ class _MemoryPhotoCard extends StatelessWidget {
                 const SizedBox(height: 10),
                 const Text(
                   '像翻开一本旧相册，慢慢看，慢慢想。',
-                  style: TextStyle(fontSize: 15, height: 1.35, color: AppTheme.textSoft),
+                  style: TextStyle(
+                      fontSize: 15, height: 1.35, color: AppTheme.textSoft),
                 ),
               ],
             ),
@@ -1207,9 +1853,12 @@ class _AnswerButton extends StatelessWidget {
       child: TextButton(
         onPressed: () {},
         style: TextButton.styleFrom(
-          backgroundColor: label == '再想想' ? AppTheme.accentSoft : AppTheme.successSoft,
-          foregroundColor: label == '再想想' ? AppTheme.text : AppTheme.primaryDeep,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          backgroundColor:
+              label == '再想想' ? AppTheme.accentSoft : AppTheme.successSoft,
+          foregroundColor:
+              label == '再想想' ? AppTheme.text : AppTheme.primaryDeep,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         ),
         child: Text(
           label,
@@ -1224,10 +1873,12 @@ class _RecordItem extends StatelessWidget {
   const _RecordItem({
     required this.title,
     required this.description,
+    this.trailing,
   });
 
   final String title;
   final String description;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -1240,26 +1891,34 @@ class _RecordItem extends StatelessWidget {
           borderRadius: BorderRadius.circular(22),
           border: Border.all(color: AppTheme.border),
         ),
-        child: Column(
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              title,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w900,
-                color: AppTheme.text,
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                      color: AppTheme.text,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    description,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      height: 1.45,
+                      color: AppTheme.textSoft,
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 6),
-            Text(
-              description,
-              style: const TextStyle(
-                fontSize: 15,
-                height: 1.45,
-                color: AppTheme.textSoft,
-              ),
-            ),
+            if (trailing != null) trailing!,
           ],
         ),
       ),
@@ -1268,9 +1927,10 @@ class _RecordItem extends StatelessWidget {
 }
 
 class _SettingsRow extends StatelessWidget {
-  const _SettingsRow({required this.title});
+  const _SettingsRow({required this.title, this.onTap});
 
   final String title;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1283,27 +1943,31 @@ class _SettingsRow extends StatelessWidget {
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: AppTheme.border),
       ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              title,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-                color: AppTheme.text,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: onTap,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: AppTheme.text,
+                ),
               ),
             ),
-          ),
-          const Text(
-            '进入',
-            style: TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w800,
-              color: AppTheme.primaryDeep,
+            const Text(
+              '进入',
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w800,
+                color: AppTheme.primaryDeep,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1334,7 +1998,8 @@ class _ModeButton extends StatelessWidget {
         onPressed: onTap,
         style: TextButton.styleFrom(
           foregroundColor: active ? Colors.white : AppTheme.text,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         ),
         child: Text(
           label,
@@ -1362,7 +2027,8 @@ class _NetworkRow extends StatelessWidget {
         decoration: BoxDecoration(
           color: online ? AppTheme.successSoft : Colors.white,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: online ? const Color(0xFFD4EEE9) : AppTheme.border),
+          border: Border.all(
+              color: online ? const Color(0xFFD4EEE9) : AppTheme.border),
         ),
         child: Row(
           children: [

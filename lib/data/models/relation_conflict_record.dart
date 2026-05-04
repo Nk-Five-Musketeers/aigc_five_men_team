@@ -16,7 +16,7 @@ class RelationConflictRecord {
   final String ownerUserId;
   final String? nearbyPersonId;
   final String personName;
-  /// relation | note | phone
+  /// relation | note | phone | name
   final String fieldName;
   final String? oldValue;
   final String? newValue;
@@ -31,6 +31,8 @@ class RelationConflictRecord {
         return '备注';
       case 'phone':
         return '电话';
+      case 'name':
+        return '姓名';
       default:
         return fieldName;
     }

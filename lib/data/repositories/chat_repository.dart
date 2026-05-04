@@ -10,11 +10,13 @@ import '../models/extracted_relation_hint.dart';
 const _relationExtractSystemPrompt = '''
 你是结构化信息抽取模块。根据「老人与助手的聊天记录」和「已有周围人档案摘要」，提取其中出现的**具体人物**及与老人的关系、电话、备注。
 请只输出**一个** JSON 对象，不要 markdown 代码块，不要任何解释、前后缀文字。格式严格为：
-{"people":[{"name":"人名(2-6字常见中文名)","relation":"如女儿/儿子/邻居/朋友，无则空字符串","phone":"11位手机号或空字符串","note":"一句补充，无则空字符串"}]}
+{"people":[{"name":"人名(2-6字常见中文名)","relation":"如女儿/儿子/邻居/朋友，无则空字符串","phone":"11位手机号或空字符串","note":"一句补充，无则空字符串","same_relation_key":""}]}
+其中 same_relation_key：仅当「档案里该称谓只对应一个人、而对话是在更正此人姓名或纠正记错」时，填档案中的称谓（如女儿），否则必须为空字符串。
 规则：
 - 只提取真实人物，不要「我」与老人自己同义；不要虚拟助手/拾忆/机器人。
 - 没有可登记人物时输出 {"people":[]}
-- 同一人只保留一条，信息合并。
+- 同一人只保留一条，信息合并；若档案中某称谓唯一且对话给出新人名，视为同一人的姓名更新，在 name 中写最新确认的人名，并填 same_relation_key。
+- 若档案显示同一称谓可能对应多人或未提及称谓，same_relation_key 留空，不要随意合并。
 ''';
 
 class ChatRepository {
@@ -201,12 +203,21 @@ class ChatRepository {
         final name = _pickStr(m, const ['name', '姓名', '人物', '人物姓名']) ?? '';
         if (name.length < 2) continue;
 
+        final srk = _pickStr(m, const [
+          'same_relation_key',
+          'sameRelationKey',
+          '称谓定位',
+          '对应称谓',
+        ]);
         out.add(
           ExtractedRelationHint(
             name: name,
             relation: _pickStr(m, const ['relation', '关系', '称谓']),
             phone: _pickStr(m, const ['phone', '电话', '手机', 'mobile']),
             note: _pickStr(m, const ['note', '备注', '说明']),
+            sameRelationKey: (srk != null && srk.trim().isNotEmpty)
+                ? srk.trim()
+                : null,
           ),
         );
       }

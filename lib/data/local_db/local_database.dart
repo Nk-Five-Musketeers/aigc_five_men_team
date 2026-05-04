@@ -552,6 +552,116 @@ class LocalDatabase {
     return name.trim().replaceAll(RegExp(r'\s+'), '');
   }
 
+  /// 称谓/关系字段规范化，用于判断是否为同一「关系槽位」（如女儿、儿子）。
+  static String normalizeRelationLabel(String? relation) {
+    if (relation == null) return '';
+    return relation.trim().replaceAll(RegExp(r'\s+'), '');
+  }
+
+  /// 同一使用者名下，称谓规范化后相同的周围人条目（可能 0/1/多条）。
+  static Future<List<Map<String, dynamic>>> findNearbyPeopleByNormalizedRelation(
+    String ownerUserId,
+    String normalizedRelation,
+  ) async {
+    if (normalizedRelation.isEmpty) return [];
+    final rows = await getNearbyPeopleForUser(ownerUserId);
+    return rows
+        .where((r) =>
+            normalizeRelationLabel(r['relation'] as String?) ==
+            normalizedRelation)
+        .toList();
+  }
+
+  /// 将 [removeId] 的非空字段合并进 [keepId]（不覆盖已有非空值），再删除冗余行，并把待处理冲突挂到保留行上。
+  static Future<void> mergeNearbyPersonAbsorbDuplicate({
+    required String keepId,
+    required String removeId,
+  }) async {
+    if (keepId == removeId) return;
+    final db = await instance();
+    final keepRows = await db.query(
+      'nearby_people',
+      where: 'id = ?',
+      whereArgs: [keepId],
+      limit: 1,
+    );
+    final remRows = await db.query(
+      'nearby_people',
+      where: 'id = ?',
+      whereArgs: [removeId],
+      limit: 1,
+    );
+    if (keepRows.isEmpty || remRows.isEmpty) return;
+    final k = keepRows.first;
+    final r = remRows.first;
+    if (k['owner_user_id'] != r['owner_user_id']) return;
+
+    final now = DateTime.now().toIso8601String();
+    final patch = <String, dynamic>{'updated_at': now};
+    void takeIfEmpty(String col) {
+      final kv = (k[col] as String?)?.trim() ?? '';
+      final rv = (r[col] as String?)?.trim() ?? '';
+      if (kv.isEmpty && rv.isNotEmpty) {
+        patch[col] = r[col];
+      }
+    }
+
+    takeIfEmpty('name');
+    takeIfEmpty('relation');
+    takeIfEmpty('phone');
+    takeIfEmpty('address');
+    takeIfEmpty('note');
+    final kEmerg = (k['is_emergency_contact'] as int?) ?? 0;
+    final rEmerg = (r['is_emergency_contact'] as int?) ?? 0;
+    if (kEmerg == 0 && rEmerg != 0) {
+      patch['is_emergency_contact'] = rEmerg;
+    }
+
+    if (patch.length > 1) {
+      await db.update('nearby_people', patch, where: 'id = ?', whereArgs: [keepId]);
+    }
+
+    await db.update(
+      'relation_conflicts',
+      {'nearby_person_id': keepId},
+      where: 'nearby_person_id = ? AND status = ?',
+      whereArgs: [removeId, 'pending'],
+    );
+    await db.delete('nearby_people', where: 'id = ?', whereArgs: [removeId]);
+  }
+
+  static Future<void> _dedupeNearbyPeopleSameNameAndRelation(
+    Database db,
+    String ownerUserId,
+    String primaryId,
+    String newName,
+  ) async {
+    final primaryRows = await db.query(
+      'nearby_people',
+      where: 'id = ?',
+      whereArgs: [primaryId],
+      limit: 1,
+    );
+    if (primaryRows.isEmpty) return;
+    final primary = primaryRows.first;
+    final rel = normalizeRelationLabel(primary['relation'] as String?);
+    final normName = normalizePersonName(newName);
+    if (normName.isEmpty || rel.isEmpty) return;
+
+    final all = await db.query(
+      'nearby_people',
+      where: 'owner_user_id = ?',
+      whereArgs: [ownerUserId],
+    );
+    for (final row in all) {
+      final rid = row['id'] as String;
+      if (rid == primaryId) continue;
+      if (normalizePersonName(row['name'] as String?) != normName) continue;
+      if (normalizeRelationLabel(row['relation'] as String?) != rel) continue;
+      await mergeNearbyPersonAbsorbDuplicate(keepId: primaryId, removeId: rid);
+    }
+  }
+
   static Future<List<Map<String, dynamic>>> listUsers() async {
     final db = await instance();
     return db.query('users', orderBy: 'created_at ASC');
@@ -636,7 +746,7 @@ class LocalDatabase {
     String? newValue,
     String? sourceMessageId,
   }) async {
-    assert(<String>{'relation', 'note', 'phone'}.contains(fieldName));
+    assert(<String>{'relation', 'note', 'phone', 'name'}.contains(fieldName));
     await ensureUserExists(ownerUserId);
     final db = await instance();
     if (nearbyPersonId != null) {
@@ -681,23 +791,44 @@ class LocalDatabase {
     final field = row['field_name'] as String;
     final newV = row['new_value'] as String?;
 
+    final ownerUserId = row['owner_user_id'] as String;
+
     if (useNew && nearbyId != null) {
-      final col = switch (field) {
-        'relation' => 'relation',
-        'phone' => 'phone',
-        'note' => 'note',
-        _ => null,
-      };
-      if (col != null) {
+      final now = DateTime.now().toIso8601String();
+      if (field == 'name' && newV != null && newV.trim().isNotEmpty) {
         await db.update(
           'nearby_people',
           {
-            col: newV,
-            'updated_at': DateTime.now().toIso8601String(),
+            'name': newV.trim(),
+            'updated_at': now,
           },
           where: 'id = ?',
           whereArgs: [nearbyId],
         );
+        await _dedupeNearbyPeopleSameNameAndRelation(
+          db,
+          ownerUserId,
+          nearbyId,
+          newV.trim(),
+        );
+      } else {
+        final col = switch (field) {
+          'relation' => 'relation',
+          'phone' => 'phone',
+          'note' => 'note',
+          _ => null,
+        };
+        if (col != null) {
+          await db.update(
+            'nearby_people',
+            {
+              col: newV,
+              'updated_at': now,
+            },
+            where: 'id = ?',
+            whereArgs: [nearbyId],
+          );
+        }
       }
     }
 

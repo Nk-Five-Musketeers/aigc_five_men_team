@@ -5,10 +5,14 @@ class ExtractedRelationHint {
     this.relation,
     this.phone,
     this.note,
+    this.sameRelationKey,
   });
 
   final String name;
   final String? relation;
   final String? phone;
   final String? note;
+
+  /// 与本地档案中已有条目对应的称谓槽位（如「女儿」），用于姓名更正时按称谓匹配同一人而非新建。
+  final String? sameRelationKey;
 }

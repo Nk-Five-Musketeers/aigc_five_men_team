@@ -60,7 +60,7 @@ class ChatProvider extends ChangeNotifier {
       final reply = await _repository
           .sendMessage(
             history: _messages,
-            systemPrompt: _buildSystemPrompt(),
+            systemPrompt: await _buildSystemPromptAsync(),
           )
           .timeout(const Duration(seconds: 110));
       final assistantMessage = _textMessage(content: reply, isUser: false);
@@ -222,24 +222,55 @@ class ChatProvider extends ChangeNotifier {
         text.contains('记得');
   }
 
-  String _buildSystemPrompt() {
+  Future<String> _memoryBulletsForPrompt() async {
+    try {
+      final user = await LocalDatabase.getUserById(_activeUserId);
+      final userLabel = (user?['name'] as String?)?.trim();
+      final rows = await LocalDatabase.getNearbyPeopleForUser(_activeUserId);
+      final lines = <String>[];
+      if (userLabel != null && userLabel.isNotEmpty) {
+        lines.add('- 用户称呼：$userLabel。');
+      }
+      if (rows.isEmpty) {
+        lines.add('- 周围人档案：暂无已保存条目，可引导老人慢慢介绍亲友。');
+      } else {
+        for (final r in rows) {
+          final name = (r['name'] as String?)?.trim() ?? '（未写姓名）';
+          final rel = (r['relation'] as String?)?.trim() ?? '';
+          final phone = (r['phone'] as String?)?.trim() ?? '';
+          final note = (r['note'] as String?)?.trim() ?? '';
+          lines.add(
+            '- ${rel.isEmpty ? '亲友' : rel}：$name'
+            '${phone.isEmpty ? '' : '，电话 $phone'}'
+            '${note.isEmpty ? '' : '；$note'}',
+          );
+        }
+      }
+      return lines.join('\n');
+    } catch (_) {
+      return '- （读取本地记忆资料失败，仍可陪老人聊天。）';
+    }
+  }
+
+  Future<String> _buildSystemPromptAsync() async {
+    final memory = await _memoryBulletsForPrompt();
     return '''
 你是“拾忆”，一款面向阿尔兹海默症早期老人、MCI阶段老人、健忘老人和空巢老人的陪伴关怀助手。
 
 你的目标：
 1. 像耐心、温暖、可信的老朋友一样陪老人说话。
-2. 老人随口提到事情时，优先联系“已有记忆资料”，自然追问，帮助扩充记忆数据库。
+2. 老人随口提到事情时，优先联系「已有记忆资料」，自然追问，帮助扩充记忆资料。
 3. 在话题自然停顿时，用提问型方式开启和老人记忆相关的新话题。
 4. 适时加入轻量认知干预，例如识别人、日常物品、地点、天气、旧职业、亲友关系，但语气必须像聊天，不能像考试。
 5. 不做医疗诊断，不使用“病情、治疗、评估结果”等医学结论。
 
 已有记忆资料：
-- 用户称呼：王阿姨。
-- 王阿姨年轻时在纺织厂工作，常骑自行车去上班。
-- 1986年春天，她常提到“春天里的自行车”。
-- 她有一个女儿，看到旧照片时常会笑着讲女儿小时候的事。
-- 老家有一个小院，午后常有阳光，也常放着水缸和自行车。
-- 最近记录：中午吃了面条，胃口不错；午休情况正常。
+$memory
+
+当老人说的亲友姓名、称谓或经历与上面档案不一致时：
+- 不要生硬否定，也不要替老人断定「记错了」。
+- 先温和厘清：是家里不止一位（例如两个女儿）还是同一位、名字或说法前后不一样。
+- 若老人确认是同一人，以老人最新说法为准，自然接话，不要提技术词。
 
 回复规则：
 - 每次回复控制在2到4句话。
@@ -462,13 +493,47 @@ class ChatProvider extends ChangeNotifier {
     return x != y;
   }
 
+  /// 比较规范化后的姓名，避免仅空格差异触发「姓名冲突」。
+  bool _meaningfullyDifferentPersonName(String? a, String? b) {
+    final x = LocalDatabase.normalizePersonName(a);
+    final y = LocalDatabase.normalizePersonName(b);
+    if (x.length < 2 || y.length < 2) return false;
+    return x != y;
+  }
+
+  /// 先按姓名匹配；否则在称谓槽位上仅对应一条档案时，按称谓视为同一人（用于姓名更正，避免重复建条）。
+  Future<Map<String, dynamic>?> _resolveExistingNearbyRow(
+      ExtractedRelationHint h) async {
+    final norm = LocalDatabase.normalizePersonName(h.name);
+    if (norm.length < 2) return null;
+
+    final byName = await LocalDatabase.findNearbyPersonByNormalizedName(
+      _activeUserId,
+      norm,
+    );
+    if (byName != null) return byName;
+
+    final srk =
+        LocalDatabase.normalizeRelationLabel(h.sameRelationKey);
+    final relNorm = LocalDatabase.normalizeRelationLabel(h.relation);
+    final slot = srk.isNotEmpty ? srk : relNorm;
+    if (slot.isEmpty) return null;
+
+    final candidates =
+        await LocalDatabase.findNearbyPeopleByNormalizedRelation(
+      _activeUserId,
+      slot,
+    );
+    if (candidates.length != 1) return null;
+    return candidates.first;
+  }
+
   Future<void> _applyExtractedHint(
       ExtractedRelationHint h, String sourceMessageId) async {
     final norm = LocalDatabase.normalizePersonName(h.name);
     if (norm.length < 2) return;
 
-    final existing =
-        await LocalDatabase.findNearbyPersonByNormalizedName(_activeUserId, norm);
+    final existing = await _resolveExistingNearbyRow(h);
 
     if (existing == null) {
       await LocalDatabase.upsertNearbyPerson({
@@ -483,9 +548,23 @@ class ChatProvider extends ChangeNotifier {
     }
 
     final id = existing['id'] as String;
+    final oldName = existing['name'] as String?;
     final oldRel = existing['relation'] as String?;
     final oldPhone = existing['phone'] as String?;
     final oldNote = existing['note'] as String?;
+
+    if (_meaningfullyDifferentPersonName(oldName, h.name)) {
+      await LocalDatabase.insertRelationConflict(
+        id: _newId('rc'),
+        ownerUserId: _activeUserId,
+        personName: h.name.trim(),
+        fieldName: 'name',
+        nearbyPersonId: id,
+        oldValue: oldName,
+        newValue: h.name.trim(),
+        sourceMessageId: sourceMessageId,
+      );
+    }
 
     if (h.relation != null) {
       if (_meaningfullyDifferent(oldRel, h.relation)) {

@@ -45,6 +45,7 @@ class RelationExtractor {
         relation: h.relation ?? prev.relation,
         phone: h.phone ?? prev.phone,
         note: _mergeNote(prev.note, h.note),
+        sameRelationKey: h.sameRelationKey ?? prev.sameRelationKey,
       );
     }
 
@@ -72,6 +73,7 @@ class RelationExtractor {
         relation: h.relation,
         phone: phones.first,
         note: h.note,
+        sameRelationKey: h.sameRelationKey,
       );
     }
 

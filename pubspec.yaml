@@ -2,7 +2,7 @@ name: aigc_five_men_team
 description: BlueCare elderly companion app scaffold.
 publish_to: "none"
 
-version: 0.1.0+1
+version: 0.2.0+1
 
 environment:
   sdk: ">=3.3.0 <4.0.0"

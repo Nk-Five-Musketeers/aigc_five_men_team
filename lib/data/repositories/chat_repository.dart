@@ -28,20 +28,19 @@ class ChatRepository {
     return <ChatMessage>[];
   }
 
+  /// 主对话由本地代理根据 [promptContext] 组合 `server/prompts`，不在此写入长 system。
   Future<String> sendMessage({
     required List<ChatMessage> history,
-    required String systemPrompt,
+    required Map<String, dynamic> promptContext,
   }) async {
-    final messages = <Map<String, String>>[
-      {'role': 'system', 'content': systemPrompt},
-      ..._compactHistory(history),
-    ];
+    final messages = _compactHistory(history);
 
     final response = await _apiClient.dio.post<Map<String, dynamic>>(
       '/api/chat',
       data: <String, dynamic>{
         'model': AppConstants.modelId,
         'messages': messages,
+        'prompt_context': promptContext,
         'temperature': 0.65,
         'top_p': 0.75,
         'max_tokens': 700,

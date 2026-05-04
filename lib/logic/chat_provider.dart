@@ -60,7 +60,7 @@ class ChatProvider extends ChangeNotifier {
       final reply = await _repository
           .sendMessage(
             history: _messages,
-            systemPrompt: await _buildSystemPromptAsync(),
+            promptContext: await _buildPromptContextAsync(),
           )
           .timeout(const Duration(seconds: 110));
       final assistantMessage = _textMessage(content: reply, isUser: false);
@@ -252,33 +252,22 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  Future<String> _buildSystemPromptAsync() async {
-    final memory = await _memoryBulletsForPrompt();
-    return '''
-你是“拾忆”，一款面向阿尔兹海默症早期老人、MCI阶段老人、健忘老人和空巢老人的陪伴关怀助手。
-
-你的目标：
-1. 像耐心、温暖、可信的老朋友一样陪老人说话。
-2. 老人随口提到事情时，优先联系「已有记忆资料」，自然追问，帮助扩充记忆资料。
-3. 在话题自然停顿时，用提问型方式开启和老人记忆相关的新话题。
-4. 适时加入轻量认知干预，例如识别人、日常物品、地点、天气、旧职业、亲友关系，但语气必须像聊天，不能像考试。
-5. 不做医疗诊断，不使用“病情、治疗、评估结果”等医学结论。
-
-已有记忆资料：
-$memory
-
-当老人说的亲友姓名、称谓或经历与上面档案不一致时：
-- 不要生硬否定，也不要替老人断定「记错了」。
-- 先温和厘清：是家里不止一位（例如两个女儿）还是同一位、名字或说法前后不一样。
-- 若老人确认是同一人，以老人最新说法为准，自然接话，不要提技术词。
-
-回复规则：
-- 每次回复控制在2到4句话。
-- 先回应情绪，再轻轻追问。
-- 追问一次即可，不要连珠炮。
-- 如果老人记不清，要安慰：“没关系，我们慢慢想”。
-- 语言使用自然中文，不要机械，不要提“数据库、认知干预、模型”等词。
-''';
+  /// 与 `server/prompts` 中全局模块对齐；记忆摘要来自本地库。
+  Future<Map<String, dynamic>> _buildPromptContextAsync() async {
+    final memoryText = await _memoryBulletsForPrompt();
+    final snippets = memoryText
+        .split('\n')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    return <String, dynamic>{
+      'global': <String, dynamic>{
+        'dialect_preference': 0.65,
+        'response_style': '简短温柔',
+        'sensitive_topics': <String>[],
+        'memory_snippets': snippets,
+      },
+    };
   }
 
   String _buildErrorMessage(Object error) {
@@ -295,7 +284,7 @@ $memory
   String _dioUserHint(DioException e) {
     if (e.type == DioExceptionType.connectionError ||
         e.type == DioExceptionType.connectionTimeout) {
-      return '请在电脑上先启动本地代理：在项目目录运行 `python server/local_chat_server.py`（需配置 VIVO_APP_KEY），并确认地址为 ${AppConstants.apiBaseUrl}。';
+      return '请在电脑上先启动本地代理：在含 env 与 aigc_five_men_team 的仓库根目录执行 `conda activate ./env` 后运行 `python aigc_five_men_team\\server\\local_chat_server.py`（需配置 VIVO_APP_KEY），并确认地址为 ${AppConstants.apiBaseUrl}。';
     }
     final data = e.response?.data;
     if (data is Map && data['error'] != null) {

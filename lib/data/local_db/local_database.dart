@@ -14,7 +14,7 @@ class LocalDatabase {
   static bool _dbFactoryReady = false;
 
   static const _dbName = 'bluecare.db';
-  static const _dbVersion = 4;
+  static const _dbVersion = 8;
 
   static const legacyDefaultUserId = 'local_user_default';
   static const legacyDefaultConversationId = 'local_conversation_home';
@@ -80,6 +80,14 @@ class LocalDatabase {
       CREATE TABLE users(
         id TEXT PRIMARY KEY,
         name TEXT,
+        birth_year TEXT,
+        hometown TEXT,
+        career TEXT,
+        hobbies TEXT,
+        food_preference TEXT,
+        personality TEXT,
+        taboo TEXT,
+        dialect TEXT,
         avatar_path TEXT,
         metadata TEXT,
         created_at TEXT
@@ -142,11 +150,16 @@ class LocalDatabase {
         owner_user_id TEXT NOT NULL,
         name TEXT,
         relation TEXT,
+        photo_path TEXT,
         phone TEXT,
+        birthday TEXT,
+        location TEXT,
         address TEXT,
+        contact_freq TEXT,
         note TEXT,
         is_emergency_contact INTEGER DEFAULT 0,
         distance_meters REAL,
+        is_active INTEGER DEFAULT 1,
         metadata TEXT,
         created_at TEXT,
         updated_at TEXT,
@@ -184,6 +197,49 @@ class LocalDatabase {
     ''');
     await db.execute(
         'CREATE INDEX idx_relation_conflicts_owner ON relation_conflicts(owner_user_id, status)');
+
+    await db.execute('''
+      CREATE TABLE life_events(
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        event_time TEXT,
+        title TEXT,
+        description TEXT,
+        location TEXT,
+        people_involved TEXT,
+        emotion TEXT,
+        photo_paths TEXT,
+        video_paths TEXT,
+        importance INTEGER,
+        source TEXT,
+        verified INTEGER DEFAULT 0,
+        used_count INTEGER DEFAULT 0,
+        last_used TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS daily_life_records(
+        record_id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        date TEXT,
+        breakfast TEXT,
+        lunch TEXT,
+        dinner TEXT,
+        activities TEXT,
+        people_met TEXT,
+        places_went TEXT,
+        mood TEXT,
+        raw_extract TEXT,
+        source_dialog_id TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_life_events_owner ON life_events(owner_user_id)');
   }
 
   static Future<void> _upgradeSchema(
@@ -196,11 +252,16 @@ class LocalDatabase {
           owner_user_id TEXT NOT NULL,
           name TEXT,
           relation TEXT,
+          photo_path TEXT,
           phone TEXT,
+          birthday TEXT,
+          location TEXT,
           address TEXT,
+          contact_freq TEXT,
           note TEXT,
           is_emergency_contact INTEGER DEFAULT 0,
           distance_meters REAL,
+          is_active INTEGER DEFAULT 1,
           metadata TEXT,
           created_at TEXT,
           updated_at TEXT,
@@ -247,6 +308,98 @@ class LocalDatabase {
       await db.execute(
           'CREATE INDEX IF NOT EXISTS idx_relation_conflicts_owner ON relation_conflicts(owner_user_id, status)');
     }
+    if (oldVersion < 6) {
+      // 为旧版数据库添加新列，逐个尝试以兼容已存在的列
+      try {
+        await db.execute('ALTER TABLE nearby_people ADD COLUMN photo_path TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE nearby_people ADD COLUMN birthday TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE nearby_people ADD COLUMN location TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE nearby_people ADD COLUMN contact_freq TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE nearby_people ADD COLUMN is_active INTEGER DEFAULT 1');
+      } catch (_) {}
+    }
+    if (oldVersion < 7) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS life_events(
+          id TEXT PRIMARY KEY,
+          owner_user_id TEXT NOT NULL,
+          event_time TEXT,
+          title TEXT,
+          description TEXT,
+          location TEXT,
+          people_involved TEXT,
+          emotion TEXT,
+          photo_paths TEXT,
+          video_paths TEXT,
+          importance INTEGER,
+          source TEXT,
+          verified INTEGER DEFAULT 0,
+          used_count INTEGER DEFAULT 0,
+          last_used TEXT,
+          created_at TEXT,
+          updated_at TEXT,
+          FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+      ''');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_life_events_owner ON life_events(owner_user_id)');
+    }
+    if (oldVersion < 8) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS daily_life_records(
+          record_id TEXT PRIMARY KEY,
+          owner_user_id TEXT NOT NULL,
+          date TEXT,
+          breakfast TEXT,
+          lunch TEXT,
+          dinner TEXT,
+          activities TEXT,
+          people_met TEXT,
+          places_went TEXT,
+          mood TEXT,
+          raw_extract TEXT,
+          source_dialog_id TEXT,
+          created_at TEXT,
+          updated_at TEXT,
+          FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+      ''');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_daily_life_user_date ON daily_life_records(owner_user_id, date)');
+    }
+    if (oldVersion < 5) {
+      // 为旧版数据库添加新列（若不存在则忽略错误）
+      try {
+        await db.execute('ALTER TABLE users ADD COLUMN birth_year TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE users ADD COLUMN hometown TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE users ADD COLUMN career TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE users ADD COLUMN hobbies TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE users ADD COLUMN food_preference TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE users ADD COLUMN personality TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE users ADD COLUMN taboo TEXT');
+      } catch (_) {}
+      try {
+        await db.execute('ALTER TABLE users ADD COLUMN dialect TEXT');
+      } catch (_) {}
+    }
     if (newVersion > _dbVersion) {
       return;
     }
@@ -257,6 +410,14 @@ class LocalDatabase {
       CREATE TABLE IF NOT EXISTS users(
         id TEXT PRIMARY KEY,
         name TEXT,
+        birth_year TEXT,
+        hometown TEXT,
+        career TEXT,
+        hobbies TEXT,
+        food_preference TEXT,
+        personality TEXT,
+        taboo TEXT,
+        dialect TEXT,
         avatar_path TEXT,
         metadata TEXT,
         created_at TEXT
@@ -306,10 +467,33 @@ class LocalDatabase {
         FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
       )
     ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS life_events(
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        event_time TEXT,
+        title TEXT,
+        description TEXT,
+        location TEXT,
+        people_involved TEXT,
+        emotion TEXT,
+        photo_paths TEXT,
+        video_paths TEXT,
+        importance INTEGER,
+        source TEXT,
+        verified INTEGER DEFAULT 0,
+        used_count INTEGER DEFAULT 0,
+        last_used TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    ''');
     await db.execute(
         'CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)');
     await db.execute(
         'CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_life_events_owner ON life_events(owner_user_id)');
   }
 
   static Future<void> _migrateLegacyChatMessages(Database db) async {

@@ -2,23 +2,47 @@ import 'dart:convert';
 
 class UserModel {
   UserModel(
-      {required this.id,
-      this.name,
-      this.avatarPath,
-      this.metadata,
-      DateTime? createdAt})
-      : createdAt = createdAt ?? DateTime.now();
+            {required this.id,
+            this.name,
+            this.avatarPath,
+            this.birthYear,
+            this.hometown,
+            this.career,
+            this.hobbies,
+            this.foodPreference,
+            this.personality,
+            this.taboo,
+            this.dialect,
+            this.metadata,
+            DateTime? createdAt})
+            : createdAt = createdAt ?? DateTime.now();
 
-  final String id;
-  final String? name;
-  final String? avatarPath;
-  final Map<String, dynamic>? metadata;
-  final DateTime createdAt;
+    final String id;
+    final String? name;
+    final String? avatarPath;
+    final String? birthYear;
+    final String? hometown;
+    final String? career;
+    final String? hobbies;
+    final String? foodPreference;
+    final String? personality;
+    final String? taboo;
+    final String? dialect;
+    final Map<String, dynamic>? metadata;
+    final DateTime createdAt;
 
   Map<String, dynamic> toMap() => {
         'id': id,
         'name': name,
-        'avatar_path': avatarPath,
+      'avatar_path': avatarPath,
+      'birth_year': birthYear,
+      'hometown': hometown,
+      'career': career,
+      'hobbies': hobbies,
+      'food_preference': foodPreference,
+      'personality': personality,
+      'taboo': taboo,
+      'dialect': dialect,
         'metadata': metadata == null ? null : _encode(metadata!),
         'created_at': createdAt.toIso8601String(),
       };
@@ -27,6 +51,14 @@ class UserModel {
         id: m['id'] as String,
         name: m['name'] as String?,
         avatarPath: m['avatar_path'] as String?,
+        birthYear: m['birth_year'] as String?,
+        hometown: m['hometown'] as String?,
+        career: m['career'] as String?,
+        hobbies: m['hobbies'] as String?,
+        foodPreference: m['food_preference'] as String?,
+        personality: m['personality'] as String?,
+        taboo: m['taboo'] as String?,
+        dialect: m['dialect'] as String?,
         metadata:
             m['metadata'] == null ? null : _decode(m['metadata'] as String),
         createdAt: DateTime.tryParse(m['created_at'] as String? ?? '') ??

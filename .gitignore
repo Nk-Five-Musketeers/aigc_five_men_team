@@ -15,6 +15,12 @@ build/
 # DevTools
 devtools_options.yaml
 
+# Local table reference images (do not commit)
+亲友表.png
+每日生活记录表.png
+经历事件表.png
+老人基本信息表.png
+
 # Misc
 *.log
 *.tmp

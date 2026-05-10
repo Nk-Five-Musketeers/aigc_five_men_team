@@ -38,9 +38,39 @@ class LocalDatabase {
       onUpgrade: (db, oldVersion, newVersion) async {
         await _upgradeSchema(db, oldVersion, newVersion);
       },
+      onOpen: (db) async {
+        await _repairSchemaIfIncomplete(db);
+      },
     );
 
     return _db!;
+  }
+
+  /// 业务所需全部表名；用于检测「仅有 bluecare.db 文件且 user_version 已对齐，但从未执行过建表」的损坏状态。
+  static const List<String> _requiredApplicationTables = <String>[
+    'users',
+    'family_members',
+    'memory_events',
+    'daily_life_records',
+    'conversations',
+    'conversation_members',
+    'messages',
+    'attachments',
+    'nearby_people',
+    'relation_conflicts',
+  ];
+
+  /// 在每次打开库后执行：若任一张核心表缺失，则补跑幂等 DDL（不依赖 onCreate/onUpgrade 是否被触发）。
+  static Future<void> _repairSchemaIfIncomplete(Database db) async {
+    for (final name in _requiredApplicationTables) {
+      if (!await _tableExists(db, name)) {
+        debugPrint(
+          'LocalDatabase: 表 "$name" 缺失，将补全完整结构（常见于空库文件已带版本号等情况）。',
+        );
+        await _createSchema(db);
+        return;
+      }
+    }
   }
 
   static Future<String> getDatabasePathForDebug() async {
@@ -75,9 +105,10 @@ class LocalDatabase {
 
   // Helper utilities: use async methods only (no blocking IO)
 
+  /// 完整业务 DDL；全部使用 `IF NOT EXISTS`，供 [onCreate]、[onOpen] 修复路径与安全复用。
   static Future<void> _createSchema(Database db) async {
     await db.execute('''
-      CREATE TABLE users(
+      CREATE TABLE IF NOT EXISTS users(
         id TEXT PRIMARY KEY,
         name TEXT,
         avatar_path TEXT,
@@ -98,7 +129,7 @@ class LocalDatabase {
     await _createFamilyMemoryDailyTables(db);
 
     await db.execute('''
-      CREATE TABLE conversations(
+      CREATE TABLE IF NOT EXISTS conversations(
         id TEXT PRIMARY KEY,
         title TEXT,
         created_at TEXT,
@@ -109,7 +140,7 @@ class LocalDatabase {
     ''');
 
     await db.execute('''
-      CREATE TABLE conversation_members(
+      CREATE TABLE IF NOT EXISTS conversation_members(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         conversation_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
@@ -121,7 +152,7 @@ class LocalDatabase {
     ''');
 
     await db.execute('''
-      CREATE TABLE messages(
+      CREATE TABLE IF NOT EXISTS messages(
         id TEXT PRIMARY KEY,
         conversation_id TEXT NOT NULL,
         user_id TEXT,
@@ -135,7 +166,7 @@ class LocalDatabase {
     ''');
 
     await db.execute('''
-      CREATE TABLE attachments(
+      CREATE TABLE IF NOT EXISTS attachments(
         id TEXT PRIMARY KEY,
         message_id TEXT NOT NULL,
         type TEXT,
@@ -148,7 +179,7 @@ class LocalDatabase {
     ''');
 
     await db.execute('''
-      CREATE TABLE nearby_people(
+      CREATE TABLE IF NOT EXISTS nearby_people(
         id TEXT PRIMARY KEY,
         owner_user_id TEXT NOT NULL,
         name TEXT,
@@ -166,18 +197,18 @@ class LocalDatabase {
     ''');
 
     await db.execute(
-        'CREATE INDEX idx_messages_conversation ON messages(conversation_id)');
-    await db
-        .execute('CREATE INDEX idx_messages_timestamp ON messages(timestamp)');
+        'CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)');
     await db.execute(
-        'CREATE INDEX idx_messages_conversation_timestamp ON messages(conversation_id, timestamp DESC)');
+        'CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)');
     await db.execute(
-        'CREATE INDEX idx_attachments_message ON attachments(message_id)');
+        'CREATE INDEX IF NOT EXISTS idx_messages_conversation_timestamp ON messages(conversation_id, timestamp DESC)');
     await db.execute(
-        'CREATE INDEX idx_nearby_people_owner ON nearby_people(owner_user_id)');
+        'CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_nearby_people_owner ON nearby_people(owner_user_id)');
 
     await db.execute('''
-      CREATE TABLE relation_conflicts(
+      CREATE TABLE IF NOT EXISTS relation_conflicts(
         id TEXT PRIMARY KEY,
         owner_user_id TEXT NOT NULL,
         nearby_person_id TEXT,
@@ -194,13 +225,14 @@ class LocalDatabase {
       )
     ''');
     await db.execute(
-        'CREATE INDEX idx_relation_conflicts_owner ON relation_conflicts(owner_user_id, status)');
+        'CREATE INDEX IF NOT EXISTS idx_relation_conflicts_owner ON relation_conflicts(owner_user_id, status)');
   }
 
   /// 表2 家庭成员、表3 记忆事件、表5 每日生活记录（均归属 users.id）。
+  /// 使用 `IF NOT EXISTS`，便于 [onCreate] 与升级路径安全复用，并补全「只建了其中一张表」的中间状态。
   static Future<void> _createFamilyMemoryDailyTables(Database db) async {
     await db.execute('''
-      CREATE TABLE family_members(
+      CREATE TABLE IF NOT EXISTS family_members(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         owner_user_id TEXT NOT NULL,
         name TEXT,
@@ -217,10 +249,10 @@ class LocalDatabase {
       )
     ''');
     await db.execute(
-        'CREATE INDEX idx_family_members_owner ON family_members(owner_user_id)');
+        'CREATE INDEX IF NOT EXISTS idx_family_members_owner ON family_members(owner_user_id)');
 
     await db.execute('''
-      CREATE TABLE memory_events(
+      CREATE TABLE IF NOT EXISTS memory_events(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         owner_user_id TEXT NOT NULL,
         event_time TEXT,
@@ -242,10 +274,10 @@ class LocalDatabase {
       )
     ''');
     await db.execute(
-        'CREATE INDEX idx_memory_events_owner ON memory_events(owner_user_id)');
+        'CREATE INDEX IF NOT EXISTS idx_memory_events_owner ON memory_events(owner_user_id)');
 
     await db.execute('''
-      CREATE TABLE daily_life_records(
+      CREATE TABLE IF NOT EXISTS daily_life_records(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         owner_user_id TEXT NOT NULL,
         date TEXT NOT NULL,
@@ -265,7 +297,7 @@ class LocalDatabase {
       )
     ''');
     await db.execute(
-        'CREATE INDEX idx_daily_life_owner_date ON daily_life_records(owner_user_id, date DESC)');
+        'CREATE INDEX IF NOT EXISTS idx_daily_life_owner_date ON daily_life_records(owner_user_id, date DESC)');
   }
 
   static Future<void> _upgradeSchema(
@@ -346,9 +378,7 @@ class LocalDatabase {
       await tryAddUserColumn('ALTER TABLE users ADD COLUMN taboo TEXT');
       await tryAddUserColumn('ALTER TABLE users ADD COLUMN dialect TEXT');
 
-      if (!await _tableExists(db, 'family_members')) {
-        await _createFamilyMemoryDailyTables(db);
-      }
+      await _createFamilyMemoryDailyTables(db);
     }
     if (newVersion > _dbVersion) {
       return;

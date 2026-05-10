@@ -398,7 +398,9 @@ class ChatProvider extends ChangeNotifier {
       );
       await _loadMessagesFromDb();
       await _reloadPendingConflicts();
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('ChatProvider: 本地数据库初始化失败: $e');
+      debugPrint('$st');
       if (_messages.isEmpty) {
         _messages.add(
           ChatMessage(

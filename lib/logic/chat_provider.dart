@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import '../config/constants.dart';
 import '../data/models/chat_message.dart';
 import '../data/models/extracted_relation_hint.dart';
+import '../data/models/memory_extraction_payload.dart';
 import '../data/models/relation_conflict_record.dart';
 import '../data/local_db/local_database.dart';
 import '../data/repositories/chat_repository.dart';
@@ -231,8 +232,89 @@ class ChatProvider extends ChangeNotifier {
       if (userLabel != null && userLabel.isNotEmpty) {
         lines.add('- 用户称呼：$userLabel。');
       }
+      if (user != null) {
+        const profilePairs = <String, String>{
+          'birth_year': '出生年月',
+          'hometown': '籍贯',
+          'career': '职业经历',
+          'hobbies': '兴趣爱好',
+          'food_preference': '饮食习惯',
+          'personality': '性格',
+          'taboo': '忌讳话题',
+          'dialect': '方言',
+        };
+        for (final e in profilePairs.entries) {
+          final v = (user[e.key] as String?)?.trim();
+          if (v != null && v.isNotEmpty) {
+            lines.add('- 老人档案·${e.value}：$v');
+          }
+        }
+      }
+
+      final familyRows =
+          await LocalDatabase.listFamilyMembersForUser(_activeUserId);
+      if (familyRows.isEmpty) {
+        lines.add('- 家庭成员表：暂无结构化记录。');
+      } else {
+        for (final r in familyRows.take(10)) {
+          final name = (r['name'] as String?)?.trim() ?? '（姓名未填）';
+          final rel = (r['relation'] as String?)?.trim() ?? '';
+          final loc = (r['location'] as String?)?.trim() ?? '';
+          final notes = (r['notes'] as String?)?.trim() ?? '';
+          final active = ((r['is_active'] as int?) ?? 1) != 0;
+          lines.add(
+            '- 家人：${rel.isEmpty ? '亲属' : rel} $name'
+            '${active ? '' : '（已故）'}'
+            '${loc.isEmpty ? '' : '，住$loc'}'
+            '${notes.isEmpty ? '' : '；$notes'}',
+          );
+        }
+      }
+
+      final memRows = await LocalDatabase.listMemoryEventsForUser(
+        _activeUserId,
+        limit: 8,
+      );
+      if (memRows.isEmpty) {
+        lines.add('- 往事记忆库：暂无已保存事件。');
+      } else {
+        for (final r in memRows) {
+          final t = (r['title'] as String?)?.trim() ?? '';
+          final et = (r['event_time'] as String?)?.trim() ?? '';
+          if (t.isEmpty) continue;
+          lines.add(
+            '- 往事：${et.isEmpty ? '' : '$et · '}$t',
+          );
+        }
+      }
+
+      final dailyRows = await LocalDatabase.listDailyLifeRecordsForUser(
+        _activeUserId,
+        limit: 4,
+      );
+      if (dailyRows.isEmpty) {
+        lines.add('- 每日生活记录：暂无。');
+      } else {
+        for (final r in dailyRows) {
+          final d = (r['date'] as String?)?.trim() ?? '';
+          final parts = <String>[];
+          void add(String label, String col) {
+            final v = (r[col] as String?)?.trim();
+            if (v != null && v.isNotEmpty) parts.add('$label$v');
+          }
+
+          add('早', 'breakfast');
+          add('午', 'lunch');
+          add('晚', 'dinner');
+          add('活动', 'activities');
+          add('心情', 'mood');
+          if (parts.isEmpty) continue;
+          lines.add('- $d 日常：${parts.join('；')}');
+        }
+      }
+
       if (rows.isEmpty) {
-        lines.add('- 周围人档案：暂无已保存条目，可引导老人慢慢介绍亲友。');
+        lines.add('- 周围人（邻居/朋友等）档案：暂无已保存条目，可引导老人慢慢介绍亲友。');
       } else {
         for (final r in rows) {
           final name = (r['name'] as String?)?.trim() ?? '（未写姓名）';
@@ -385,25 +467,52 @@ class ChatProvider extends ChangeNotifier {
       }
 
       final nearbySummary = await _nearbySummaryForLlm();
-      var hints = <ExtractedRelationHint>[];
+      var payload = MemoryExtractionPayload.empty();
 
       try {
-        hints = await _repository
-            .extractRelationsFromChat(
+        payload = await _repository
+            .extractFullMemoryFromChat(
               transcriptMessages: transcript,
               existingNearbySummary: nearbySummary,
+              existingUserSummary: await _userProfileSummaryForLlm(),
             )
-            .timeout(const Duration(seconds: 50));
-        llmHintCount = hints.length;
+            .timeout(const Duration(seconds: 55));
+        llmHintCount = payload.people.length;
       } catch (e, st) {
         debugPrint('[relation_extract] LLM 调用失败: $e\n$st');
       }
 
+      var hints = payload.people;
       if (hints.isEmpty) {
         final fullText =
             transcript.map((e) => e['content'] ?? '').join('\n');
         hints = RelationExtractor.extract(fullText);
         ruleHintCount = hints.length;
+      }
+
+      try {
+        await _applyElderProfilePatch(payload.elderProfilePatch);
+      } catch (e, st) {
+        debugPrint('[relation_extract] 更新老人本人档案失败: $e\n$st');
+      }
+      try {
+        await _applyExtractedFamilyMembers(payload.familyMemberRows);
+      } catch (e, st) {
+        debugPrint('[relation_extract] 家庭成员写入失败: $e\n$st');
+      }
+      try {
+        await _applyExtractedMemoryEvents(payload.memoryEventRows);
+      } catch (e, st) {
+        debugPrint('[relation_extract] 记忆事件写入失败: $e\n$st');
+      }
+      try {
+        await _applyDailyLifePatch(
+          payload.dailyLifePatch,
+          sourceMessageId: sourceMessageId,
+          rawJson: payload.rawAssistantJson,
+        );
+      } catch (e, st) {
+        debugPrint('[relation_extract] 每日生活记录写入失败: $e\n$st');
       }
 
       for (final h in hints) {
@@ -435,23 +544,168 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
+  /// 仅收录**用户（老人）**的文本发言，不包含助手回复，供抽取模型使用，避免把模型幻觉写进档案。
   List<Map<String, String>> _buildExtractionTranscript() {
-    final normal = _messages
+    final userLines = _messages
         .where(
-          (m) =>
-              m.kind == ChatMessageKind.text || m.kind == ChatMessageKind.error,
+          (m) => m.isUser && m.kind == ChatMessageKind.text,
         )
         .toList();
-    final recent =
-        normal.length > 14 ? normal.sublist(normal.length - 14) : normal;
+    const maxUserTurns = 28;
+    final recent = userLines.length > maxUserTurns
+        ? userLines.sublist(userLines.length - maxUserTurns)
+        : userLines;
     return recent
         .map(
           (m) => <String, String>{
-            'role': m.isUser ? 'user' : 'assistant',
+            'role': 'user',
             'content': m.content,
           },
         )
         .toList();
+  }
+
+  Future<String> _userProfileSummaryForLlm() async {
+    try {
+      final u = await LocalDatabase.getUserById(_activeUserId);
+      if (u == null) return '（尚无老人档案）';
+      final parts = <String>[];
+      void add(String label, String key) {
+        final v = (u[key] as String?)?.trim();
+        if (v != null && v.isNotEmpty) {
+          parts.add('$label:$v');
+        }
+      }
+
+      add('称呼', 'name');
+      add('出生年月', 'birth_year');
+      add('籍贯', 'hometown');
+      add('职业经历', 'career');
+      add('兴趣爱好', 'hobbies');
+      add('饮食习惯', 'food_preference');
+      add('性格', 'personality');
+      add('忌讳', 'taboo');
+      add('方言', 'dialect');
+      return parts.isEmpty ? '（尚无老人档案）' : parts.join('；');
+    } catch (_) {
+      return '（读取老人档案失败）';
+    }
+  }
+
+  Future<void> _applyElderProfilePatch(Map<String, String> patch) async {
+    if (patch.isEmpty) return;
+    await LocalDatabase.ensureUserExists(_activeUserId);
+    await LocalDatabase.updateUser(_activeUserId, patch);
+  }
+
+  Future<void> _applyExtractedFamilyMembers(
+    List<Map<String, dynamic>> rows,
+  ) async {
+    for (final raw in rows) {
+      final r = Map<String, dynamic>.from(raw);
+      final name = (r['name'] as String?)?.trim() ?? '';
+      if (name.length < 2) continue;
+      final relation = (r['relation'] as String?)?.trim() ?? '';
+      final existing = await LocalDatabase.findFamilyMemberByOwnerNameRelation(
+        _activeUserId,
+        name,
+        relation,
+      );
+      if (existing != null) {
+        final id = (existing['id'] as num).toInt();
+        final patch = <String, dynamic>{};
+        r.forEach((key, value) {
+          if (key == 'name') return;
+          if (value == null) return;
+          if (value is String && value.trim().isEmpty) return;
+          patch[key] = value;
+        });
+        if (patch.isNotEmpty) {
+          await LocalDatabase.updateFamilyMember(id, patch);
+        }
+      } else {
+        await LocalDatabase.insertFamilyMember({
+          'owner_user_id': _activeUserId,
+          ...r,
+        });
+      }
+    }
+  }
+
+  Future<void> _applyExtractedMemoryEvents(
+    List<Map<String, dynamic>> rows,
+  ) async {
+    for (final raw in rows) {
+      final r = Map<String, dynamic>.from(raw);
+      final title = (r['title'] as String?)?.trim() ?? '';
+      if (title.length < 2) continue;
+      final eventTime = (r['event_time'] as String?)?.trim() ?? '';
+      final eid = await LocalDatabase.findMemoryEventIdByOwnerTitleEventTime(
+        _activeUserId,
+        title,
+        eventTime,
+      );
+      if (eid != null) {
+        final patch = <String, dynamic>{};
+        r.forEach((key, value) {
+          if (key == 'title' || key == 'event_time') return;
+          if (value == null) return;
+          if (value is String && value.trim().isEmpty) return;
+          patch[key] = value;
+        });
+        if (patch.isNotEmpty) {
+          await LocalDatabase.updateMemoryEvent(eid, patch);
+        }
+      } else {
+        await LocalDatabase.insertMemoryEvent({
+          'owner_user_id': _activeUserId,
+          ...r,
+        });
+      }
+    }
+  }
+
+  String _extractedFieldStr(dynamic v) => v?.toString().trim() ?? '';
+
+  Future<void> _applyDailyLifePatch(
+    Map<String, dynamic>? patch, {
+    required String sourceMessageId,
+    String? rawJson,
+  }) async {
+    if (patch == null || patch.isEmpty) return;
+    var dateStr = _extractedFieldStr(patch['date']);
+    if (dateStr.isEmpty) {
+      dateStr = DateTime.now().toIso8601String().split('T').first;
+    }
+    final breakfast = _extractedFieldStr(patch['breakfast']);
+    final lunch = _extractedFieldStr(patch['lunch']);
+    final dinner = _extractedFieldStr(patch['dinner']);
+    final activities = _extractedFieldStr(patch['activities']);
+    final peopleMet = _extractedFieldStr(patch['people_met']);
+    final placesWent = _extractedFieldStr(patch['places_went']);
+    final mood = _extractedFieldStr(patch['mood']);
+    final hasContent = breakfast.isNotEmpty ||
+        lunch.isNotEmpty ||
+        dinner.isNotEmpty ||
+        activities.isNotEmpty ||
+        peopleMet.isNotEmpty ||
+        placesWent.isNotEmpty ||
+        mood.isNotEmpty;
+    if (!hasContent) return;
+
+    await LocalDatabase.upsertDailyLifeRecordByDate({
+      'owner_user_id': _activeUserId,
+      'date': dateStr,
+      'breakfast': breakfast,
+      'lunch': lunch,
+      'dinner': dinner,
+      'activities': activities,
+      'people_met': peopleMet,
+      'places_went': placesWent,
+      'mood': mood,
+      'source_dialog': sourceMessageId,
+      'raw_extract': rawJson ?? json.encode(patch),
+    });
   }
 
   Future<String> _nearbySummaryForLlm() async {
@@ -492,7 +746,8 @@ class ChatProvider extends ChangeNotifier {
 
   /// 先按姓名匹配；否则在称谓槽位上仅对应一条档案时，按称谓视为同一人（用于姓名更正，避免重复建条）。
   Future<Map<String, dynamic>?> _resolveExistingNearbyRow(
-      ExtractedRelationHint h) async {
+    ExtractedRelationHint h,
+  ) async {
     final norm = LocalDatabase.normalizePersonName(h.name);
     if (norm.length < 2) return null;
 
@@ -502,14 +757,12 @@ class ChatProvider extends ChangeNotifier {
     );
     if (byName != null) return byName;
 
-    final srk =
-        LocalDatabase.normalizeRelationLabel(h.sameRelationKey);
+    final srk = LocalDatabase.normalizeRelationLabel(h.sameRelationKey);
     final relNorm = LocalDatabase.normalizeRelationLabel(h.relation);
     final slot = srk.isNotEmpty ? srk : relNorm;
     if (slot.isEmpty) return null;
 
-    final candidates =
-        await LocalDatabase.findNearbyPeopleByNormalizedRelation(
+    final candidates = await LocalDatabase.findNearbyPeopleByNormalizedRelation(
       _activeUserId,
       slot,
     );
@@ -542,80 +795,92 @@ class ChatProvider extends ChangeNotifier {
     final oldPhone = existing['phone'] as String?;
     final oldNote = existing['note'] as String?;
 
+    // 同一档案同一时间只保留一条待确认冲突（insert 内会先删该档案旧 pending）。
+    // 单次抽取内优先提示：姓名 > 称谓 > 电话 > 备注。
+    String? conflictField;
+    String? conflictOld;
+    String? conflictNew;
     if (_meaningfullyDifferentPersonName(oldName, h.name)) {
+      conflictField = 'name';
+      conflictOld = oldName;
+      conflictNew = h.name.trim();
+    } else if (h.relation != null &&
+        _meaningfullyDifferent(oldRel, h.relation)) {
+      conflictField = 'relation';
+      conflictOld = oldRel;
+      conflictNew = h.relation;
+    } else if (h.phone != null && _meaningfullyDifferent(oldPhone, h.phone)) {
+      conflictField = 'phone';
+      conflictOld = oldPhone;
+      conflictNew = h.phone;
+    } else if (h.note != null &&
+        h.note!.trim().isNotEmpty &&
+        _meaningfullyDifferent(oldNote, h.note!.trim())) {
+      conflictField = 'note';
+      conflictOld = oldNote;
+      conflictNew = h.note!.trim();
+    }
+
+    if (conflictField != null) {
       await LocalDatabase.insertRelationConflict(
         id: _newId('rc'),
         ownerUserId: _activeUserId,
         personName: h.name.trim(),
-        fieldName: 'name',
+        fieldName: conflictField,
         nearbyPersonId: id,
-        oldValue: oldName,
-        newValue: h.name.trim(),
+        oldValue: conflictOld,
+        newValue: conflictNew,
         sourceMessageId: sourceMessageId,
       );
     }
 
+    Future<Map<String, dynamic>?> freshNearbyRow() async {
+      final rows = await LocalDatabase.getNearbyPeopleForUser(_activeUserId);
+      for (final r in rows) {
+        if (r['id'] == id) return r;
+      }
+      return null;
+    }
+
     if (h.relation != null) {
-      if (_meaningfullyDifferent(oldRel, h.relation)) {
-        await LocalDatabase.insertRelationConflict(
-          id: _newId('rc'),
-          ownerUserId: _activeUserId,
-          personName: h.name.trim(),
-          fieldName: 'relation',
-          nearbyPersonId: id,
-          oldValue: oldRel,
-          newValue: h.relation,
-          sourceMessageId: sourceMessageId,
-        );
-      } else if ((oldRel ?? '').trim().isEmpty) {
-        await LocalDatabase.upsertNearbyPerson({
-          ...existing,
-          'relation': h.relation,
-          'updated_at': DateTime.now().toIso8601String(),
-        });
+      if (!_meaningfullyDifferent(oldRel, h.relation) &&
+          (oldRel ?? '').trim().isEmpty) {
+        final cur = await freshNearbyRow();
+        if (cur != null) {
+          await LocalDatabase.upsertNearbyPerson({
+            ...cur,
+            'relation': h.relation,
+            'updated_at': DateTime.now().toIso8601String(),
+          });
+        }
       }
     }
 
     if (h.phone != null) {
-      if (_meaningfullyDifferent(oldPhone, h.phone)) {
-        await LocalDatabase.insertRelationConflict(
-          id: _newId('rc'),
-          ownerUserId: _activeUserId,
-          personName: h.name.trim(),
-          fieldName: 'phone',
-          nearbyPersonId: id,
-          oldValue: oldPhone,
-          newValue: h.phone,
-          sourceMessageId: sourceMessageId,
-        );
-      } else if ((oldPhone ?? '').trim().isEmpty) {
-        await LocalDatabase.upsertNearbyPerson({
-          ...existing,
-          'phone': h.phone,
-          'updated_at': DateTime.now().toIso8601String(),
-        });
+      if (!_meaningfullyDifferent(oldPhone, h.phone) &&
+          (oldPhone ?? '').trim().isEmpty) {
+        final cur = await freshNearbyRow();
+        if (cur != null) {
+          await LocalDatabase.upsertNearbyPerson({
+            ...cur,
+            'phone': h.phone,
+            'updated_at': DateTime.now().toIso8601String(),
+          });
+        }
       }
     }
 
     if (h.note != null && h.note!.trim().isNotEmpty) {
       final n = h.note!.trim();
-      if ((oldNote ?? '').trim().isEmpty) {
-        await LocalDatabase.upsertNearbyPerson({
-          ...existing,
-          'note': n,
-          'updated_at': DateTime.now().toIso8601String(),
-        });
-      } else if (_meaningfullyDifferent(oldNote, n)) {
-        await LocalDatabase.insertRelationConflict(
-          id: _newId('rc'),
-          ownerUserId: _activeUserId,
-          personName: h.name.trim(),
-          fieldName: 'note',
-          nearbyPersonId: id,
-          oldValue: oldNote,
-          newValue: n,
-          sourceMessageId: sourceMessageId,
-        );
+      if (!_meaningfullyDifferent(oldNote, n) && (oldNote ?? '').trim().isEmpty) {
+        final cur = await freshNearbyRow();
+        if (cur != null) {
+          await LocalDatabase.upsertNearbyPerson({
+            ...cur,
+            'note': n,
+            'updated_at': DateTime.now().toIso8601String(),
+          });
+        }
       }
     }
   }

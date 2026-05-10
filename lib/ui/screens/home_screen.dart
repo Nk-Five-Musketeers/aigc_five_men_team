@@ -23,6 +23,7 @@ class _HomeScreenState extends State<HomeScreen> {
   _AppView _view = _AppView.home;
   bool _keyboardOpen = true;
   bool _networkOnline = false;
+  bool _isRecording = false;
   String _speechMode = '自动识别';
 
   @override
@@ -42,8 +43,16 @@ class _HomeScreenState extends State<HomeScreen> {
     await context.read<ChatProvider>().sendMessage(text);
   }
 
-  Future<void> _sendVoiceDemoPrompt() async {
-    await context.read<ChatProvider>().sendMessage('我想和你聊聊今天的事。');
+  void _onVoiceButtonTap() {
+    final chat = context.read<ChatProvider>();
+    if (chat.isSending) return;
+
+    if (_isRecording) {
+      setState(() => _isRecording = false);
+      chat.sendMessage('我想和你聊聊今天的事。');
+    } else {
+      setState(() => _isRecording = true);
+    }
   }
 
   @override
@@ -105,10 +114,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         _BottomVoiceBar(
                           keyboardOpen: _keyboardOpen,
                           isSending: chat.isSending,
+                          isRecording: _isRecording,
                           onKeyboardTap: () {
                             setState(() => _keyboardOpen = !_keyboardOpen);
                           },
-                          onVoiceTap: _sendVoiceDemoPrompt,
+                          onVoiceTap: _onVoiceButtonTap,
                         ),
                       ],
                     ),
@@ -1432,17 +1442,31 @@ class _BottomVoiceBar extends StatelessWidget {
   const _BottomVoiceBar({
     required this.keyboardOpen,
     required this.isSending,
+    required this.isRecording,
     required this.onKeyboardTap,
     required this.onVoiceTap,
   });
 
   final bool keyboardOpen;
   final bool isSending;
+  final bool isRecording;
   final VoidCallback onKeyboardTap;
   final VoidCallback onVoiceTap;
 
   @override
   Widget build(BuildContext context) {
+    final voiceActive = isRecording || isSending;
+    final voiceLabel = isSending
+        ? '正在回应'
+        : isRecording
+            ? '正在听您说话...'
+            : '点击开始说话';
+    final voiceSub = isSending
+        ? '请稍候'
+        : isRecording
+            ? '再次点击结束'
+            : '说出你想说的话';
+
     return _WarmCard(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
       child: Row(
@@ -1474,7 +1498,11 @@ class _BottomVoiceBar extends StatelessWidget {
               child: Container(
                 constraints: const BoxConstraints(minHeight: 90),
                 decoration: BoxDecoration(
-                  color: isSending ? AppTheme.textSoft : AppTheme.primary,
+                  color: isSending
+                      ? AppTheme.textSoft
+                      : isRecording
+                          ? const Color(0xFFFF6B6B)
+                          : AppTheme.primary,
                   borderRadius: BorderRadius.circular(26),
                   boxShadow: const [
                     BoxShadow(
@@ -1488,7 +1516,7 @@ class _BottomVoiceBar extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(
-                      isSending ? '正在回应' : '按住这里说话',
+                      voiceLabel,
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 22,
@@ -1496,9 +1524,9 @@ class _BottomVoiceBar extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 2),
-                    const Text(
-                      '松开结束',
-                      style: TextStyle(
+                    Text(
+                      voiceSub,
+                      style: const TextStyle(
                         color: Color(0xE6FFFFFF),
                         fontSize: 15,
                         fontWeight: FontWeight.w700,

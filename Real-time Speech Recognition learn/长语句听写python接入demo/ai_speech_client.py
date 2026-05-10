@@ -1,0 +1,170 @@
+import soundfile
+import gevent
+from gevent import monkey
+import struct
+import json
+import sys
+import uuid
+import time
+from urllib import parse
+from websocket import create_connection
+
+monkey.patch_all()
+NUM = 1
+
+# 从wav文件中读取音频数据和采样率
+def read_wave_data(wav_path):
+    wav_data, sample_rate = soundfile.read(wav_path, dtype='int16')
+    return wav_data, sample_rate
+
+
+# 处理音频数据并发送给服务端
+def send_process(ws, wav_path):
+    try:
+        # 发送音频处理开始的消息
+        start_data = {
+            "type": "started",
+            "request_id": str(uuid.uuid1()).replace('-', ''),
+            "asr_info": {
+                "front_vad_time": 6000,
+                "end_vad_time": 2500,
+                "audio_type": "pcm",
+                "chinese2digital": 1,
+                "punctuation": 1,
+            },
+            "business_info": ""
+        }
+
+        start_data_json_str = json.dumps(start_data)
+        ws.send(start_data_json_str)
+
+        # 读取音频数据
+        wav_data, sample_rate = read_wave_data(wav_path)
+
+        nlen = len(wav_data)
+        nframes = nlen * 2
+        pack_data = struct.pack('%dh' % nlen, *wav_data)
+        wav_data_c = list(struct.unpack('B' * nframes, pack_data))
+
+        cur_frames = 0
+        sample_frames = 1280
+
+        # 分帧发送音频数据
+        while cur_frames < nframes:
+            samp_remaining = nframes - cur_frames
+            num_samp = sample_frames if sample_frames < samp_remaining else samp_remaining
+
+            list_tmp = [None] * num_samp
+            # 将音频数据打包为二进制数据
+            for i in range(num_samp):
+                list_tmp[i] = wav_data_c[cur_frames + i]
+
+            pack_data_2 = struct.pack('%dB' % num_samp, *list_tmp)
+            cur_frames += num_samp
+            # 发送二进制音频数据
+            if len(pack_data_2) < 1280:
+                break
+
+            ws.send_binary(pack_data_2)
+            time.sleep(0.04)
+        # 发送音频数据结束标记
+        enddata = b'--end--'
+        ws.send_binary(enddata)
+        # 发送关闭连接的标记
+        closedata = b'--close--'
+        ws.send_binary(closedata)
+
+    except Exception as e:
+        print(e)
+        return
+
+
+# 接收处理结果
+def recv_process(ws, tbegin, wav_path):
+    while True:
+        try:
+            r = ws.recv()  # 从WebSocket接收数据
+            tmpobj = json.loads(r)  # 解析接收到的JSON数据
+            print(r)  # 打印接收到的数据
+
+            if tmpobj["action"] == "error":  # 处理错误消息
+                return
+
+            if tmpobj["action"] == "result":  # 处理处理结果
+                if tmpobj["type"] == "asr":  # 如果是语音识别结果
+                    errno = tmpobj["code"]  # 获取错误码
+                    if errno == 8 or errno == 0 or errno == 9:  # 处理特定的错误码
+                        r = json.dumps(tmpobj)
+                        data = tmpobj["data"]
+                        tend = int(round(time.time() * 1000))
+                        path = wav_path
+                        text = data.get("onebest", None)
+                        sid = tmpobj["sid"]
+                        rid = tmpobj.get("request_id", "NULL")
+                        code = tmpobj["code"]
+                        t2 = tend - tbegin
+                        t3 = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                        if errno == 9 or errno == 0:
+                            print("{} {} {} {} {} {} {} ".format(path, text, rid, sid, code, t2, t3))
+                        if errno == 9:
+                            return
+        except Exception as e:
+            print(e)
+            path = wav_path
+            err = "exception"
+            t3 = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            print("{} {} {}".format(path, err, t3))
+            return
+
+# 控制音频处理流程
+def control_process(wav_path):
+    t = int(round(time.time() * 1000))
+
+    params = {'client_version': parse.quote('unknown'), 'package': parse.quote('unknown'),
+              'sdk_version': parse.quote('3.0'), 'user_id': parse.quote('2addc42b7ae689dfdf1c63e220df52a2'),
+              'android_version': parse.quote('unknown'), 'system_time': parse.quote(str(t)), 'net_type': 1,
+              'nonce_str': parse.quote('xarhtv6afy7n5ime'), 'engineid': "longasrlisten",'requestId': parse.quote(str(uuid.uuid4()))}
+
+    # your_AppId, your_AppKey
+    AppID = 'your_AppId'
+    AppKey = 'your_AppKey'
+
+    uri = '/asr/v2'
+    domain = 'api-ai.vivo.com.cn'
+    headers = {
+        "Authorization": f"Bearer {AppKey}"
+    }
+    param_str = ''
+    seq = ''
+
+    for key, value in params.items():
+        value = str(value)
+        param_str = param_str + seq + key + '=' + value
+        seq = '&'
+
+    ws = create_connection('ws://' + domain + '/asr/v2?' + param_str, header=headers)  # 创建WebSocket连接
+
+    co1 = gevent.spawn(send_process, ws, wav_path)  # 并发执行音频数据发送操作
+    co2 = gevent.spawn(recv_process, ws, t, wav_path)  # 并发执行接收处理结果操作
+    gevent.joinall([co1, co2])  # 等待所有协程执行完成
+    time.sleep(0.04)  # 等待一段时间
+
+def main():
+    if len(sys.argv) < 2:
+        print('usage :  python %s conf' % sys.argv[0])
+        print('example: python %s %s' % (sys.argv[0], 'audio.conf'))
+        sys.exit(1)
+    else:
+        config = sys.argv[1]
+
+    with open(config, 'rt') as f:
+        line = f.readline().strip()
+
+    coro = []
+    t = gevent.spawn(control_process, line)
+    coro.append(t)
+    gevent.joinall(coro)
+
+
+if __name__ == "__main__":
+    main()

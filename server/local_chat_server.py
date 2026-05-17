@@ -5,7 +5,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 HOST = os.getenv("HOST", "127.0.0.1")
@@ -69,6 +69,31 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
 
         return {"role": "system", "content": prompt}
 
+    def _resolve_default_system_message(
+        self,
+        req_data: Dict[str, Any],
+        platform: str,
+        memory_context: Optional[List[Any]],
+    ) -> Dict[str, str]:
+        pc = req_data.get("prompt_context")
+        if isinstance(pc, dict) and pc:
+            try:
+                from prompts.prompt_composer import compose_for_request
+
+                mc = memory_context if isinstance(memory_context, list) else None
+                composed = compose_for_request(pc, memory_context=mc)
+                return {
+                    "role": "system",
+                    "content": composed["content"],
+                }
+            except Exception as exc:
+                print(
+                    f"[prompt_context] failed, using legacy system prompt: {exc}",
+                    flush=True,
+                )
+        legacy = self._build_platform_system_message(platform, memory_context)
+        return {"role": "system", "content": legacy["content"]}
+
     def do_GET(self) -> None:
         if urllib.parse.urlparse(self.path).path == "/health":
             self._send_json(
@@ -112,7 +137,9 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
 
         platform = req_data.get("platform", "AI")
         memory_context = req_data.get("memory_context")
-        system_message = self._build_platform_system_message(platform, memory_context)
+        system_message = self._resolve_default_system_message(
+            req_data, platform, memory_context
+        )
 
         has_system_message = any(msg.get("role") == "system" for msg in messages)
         if not has_system_message:

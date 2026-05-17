@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../config/theme.dart';
+import '../../core/services/voice_input_service.dart';
 import '../../data/models/chat_message.dart';
 import '../../data/models/nearby_person.dart';
 import '../../data/models/relation_conflict_record.dart';
@@ -23,10 +26,12 @@ class _HomeScreenState extends State<HomeScreen> {
   _AppView _view = _AppView.home;
   bool _keyboardOpen = true;
   bool _networkOnline = false;
+  bool _isRecording = false;
   String _speechMode = '自动识别';
 
   @override
   void dispose() {
+    unawaited(VoiceInputService.cancelForDispose());
     _messageController.dispose();
     super.dispose();
   }
@@ -42,8 +47,65 @@ class _HomeScreenState extends State<HomeScreen> {
     await context.read<ChatProvider>().sendMessage(text);
   }
 
-  Future<void> _sendVoiceDemoPrompt() async {
-    await context.read<ChatProvider>().sendMessage('我想和你聊聊今天的事。');
+  Future<void> _onVoiceButtonTap() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final chat = context.read<ChatProvider>();
+    if (chat.isSending) return;
+
+    if (_isRecording) {
+      await VoiceInputService.stopFromUser();
+      return;
+    }
+
+    setState(() => _isRecording = true);
+    try {
+      final text = await VoiceInputService.listenOnce(speechMode: _speechMode);
+      if (!mounted) return;
+      if (mounted) setState(() => _isRecording = false);
+
+      final trimmed = text.trim();
+      final userStopped = VoiceInputService.consumeEndedByUserStop();
+
+      if (trimmed.isNotEmpty) {
+        final polished = await chat.polishSpeechBeforeSend(trimmed);
+        if (!mounted) return;
+        await chat.sendMessage(
+          polished,
+          networkTimeout: const Duration(seconds: 180),
+        );
+      } else if (!userStopped) {
+        messenger?.showSnackBar(
+          const SnackBar(
+            content: Text('没听到内容，请再试一次或使用键盘输入。'),
+          ),
+        );
+      }
+    } on TimeoutException catch (_) {
+      if (mounted) {
+        messenger?.showSnackBar(
+          const SnackBar(
+            content: Text('语音识别初始化超时，请检查麦克风后重试或使用键盘输入。'),
+          ),
+        );
+      }
+    } on VoiceInputUnavailableException catch (e) {
+      if (mounted) {
+        messenger?.showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    } on VoiceInputListenException catch (e) {
+      if (mounted) {
+        messenger?.showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    } catch (e) {
+      if (mounted) {
+        messenger?.showSnackBar(
+          SnackBar(content: Text('语音识别异常：$e')),
+        );
+      }
+    } finally {
+      VoiceInputService.consumeEndedByUserStop();
+      if (mounted) setState(() => _isRecording = false);
+    }
   }
 
   @override
@@ -105,10 +167,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         _BottomVoiceBar(
                           keyboardOpen: _keyboardOpen,
                           isSending: chat.isSending,
+                          isRecording: _isRecording,
                           onKeyboardTap: () {
                             setState(() => _keyboardOpen = !_keyboardOpen);
                           },
-                          onVoiceTap: _sendVoiceDemoPrompt,
+                          onVoiceTap: _onVoiceButtonTap,
                         ),
                       ],
                     ),
@@ -1432,17 +1495,30 @@ class _BottomVoiceBar extends StatelessWidget {
   const _BottomVoiceBar({
     required this.keyboardOpen,
     required this.isSending,
+    required this.isRecording,
     required this.onKeyboardTap,
     required this.onVoiceTap,
   });
 
   final bool keyboardOpen;
   final bool isSending;
+  final bool isRecording;
   final VoidCallback onKeyboardTap;
   final VoidCallback onVoiceTap;
 
   @override
   Widget build(BuildContext context) {
+    final voiceLabel = isSending
+        ? '正在回应'
+        : isRecording
+            ? '正在识别'
+            : '点击开始说话';
+    final voiceSub = isSending
+        ? '请稍候'
+        : isRecording
+            ? '说完请点击结束发送'
+            : '点击后立即开始识别';
+
     return _WarmCard(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
       child: Row(
@@ -1474,7 +1550,11 @@ class _BottomVoiceBar extends StatelessWidget {
               child: Container(
                 constraints: const BoxConstraints(minHeight: 90),
                 decoration: BoxDecoration(
-                  color: isSending ? AppTheme.textSoft : AppTheme.primary,
+                  color: isSending
+                      ? AppTheme.textSoft
+                      : isRecording
+                          ? const Color(0xFFFF6B6B)
+                          : AppTheme.primary,
                   borderRadius: BorderRadius.circular(26),
                   boxShadow: const [
                     BoxShadow(
@@ -1488,7 +1568,7 @@ class _BottomVoiceBar extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(
-                      isSending ? '正在回应' : '按住这里说话',
+                      voiceLabel,
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 22,
@@ -1496,9 +1576,9 @@ class _BottomVoiceBar extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 2),
-                    const Text(
-                      '松开结束',
-                      style: TextStyle(
+                    Text(
+                      voiceSub,
+                      style: const TextStyle(
                         color: Color(0xE6FFFFFF),
                         fontSize: 15,
                         fontWeight: FontWeight.w700,

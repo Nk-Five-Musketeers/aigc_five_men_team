@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import uuid
 import urllib.error
 import urllib.parse
@@ -7,6 +8,10 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
+
+_SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SERVER_DIR not in sys.path:
+    sys.path.insert(0, _SERVER_DIR)
 
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
@@ -37,8 +42,17 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_content_length(self) -> int:
+        return int(self.headers.get("Content-Length", "0"))
+
+    def _discard_request_body(self) -> None:
+        """未处理的路由也需读完 body，否则客户端上传二进制时会 Connection reset。"""
+        length = self._read_content_length()
+        if length > 0:
+            self.rfile.read(length)
+
     def _read_json_body(self) -> Tuple[Optional[Dict], Optional[str]]:
-        content_length = int(self.headers.get("Content-Length", "0"))
+        content_length = self._read_content_length()
         if content_length <= 0:
             return None, "Body is required"
         try:
@@ -101,10 +115,99 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "has_server_key": bool(os.getenv("VIVO_APP_KEY") or os.getenv("APP_KEY")),
+                    "local_speech_nlp": True,
+                    "vivo_asr": bool(os.getenv("VIVO_APP_KEY") or os.getenv("APP_KEY")),
                 },
             )
             return
         self._send_json(404, {"error": "Not found"})
+
+    def _handle_asr_transcribe(self) -> None:
+        if not (os.getenv("VIVO_APP_KEY") or os.getenv("APP_KEY")):
+            self._discard_request_body()
+            self._send_json(
+                400,
+                {"error": "Missing AppKey. Set VIVO_APP_KEY or APP_KEY for vivo ASR."},
+            )
+            return
+
+        parsed = urllib.parse.urlparse(self.path)
+        mode = (urllib.parse.parse_qs(parsed.query).get("mode") or ["auto"])[0]
+
+        content_type = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        audio_bytes = None
+
+        try:
+            if content_type.startswith("audio/") or content_type == "application/octet-stream":
+                length = self._read_content_length()
+                if length <= 0:
+                    self._send_json(400, {"error": "Empty audio body"})
+                    return
+                audio_bytes = self.rfile.read(length)
+            else:
+                self._discard_request_body()
+                self._send_json(
+                    400,
+                    {
+                        "error": "Content-Type must be audio/wav or application/octet-stream",
+                        "received": content_type or "(empty)",
+                    },
+                )
+                return
+
+            if not audio_bytes or len(audio_bytes) < 44:
+                self._send_json(400, {"error": "Audio too short"})
+                return
+
+            from asr_http import transcribe_upload
+            from speech_recognition import VivoASRError
+
+            text, mode_used = transcribe_upload(audio_bytes, mode=mode)
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "text": text,
+                    "mode": mode_used,
+                    "source": "vivo_asr",
+                },
+            )
+        except VivoASRError as exc:
+            self._send_json(
+                502,
+                {"error": "vivo_asr_failed", "code": exc.code, "detail": exc.desc},
+            )
+        except Exception as exc:
+            self._send_json(500, {"error": "asr_transcribe_failed", "detail": str(exc)})
+
+    def _handle_speech_polish(self) -> None:
+        req_data, err = self._read_json_body()
+        if err:
+            self._send_json(400, {"error": err})
+            return
+        assert req_data is not None
+
+        text = req_data.get("text")
+        if not isinstance(text, str):
+            self._send_json(400, {"error": "text must be a string"})
+            return
+
+        try:
+            from nlp_speech_polish import polish_speech_transcript
+
+            polished = polish_speech_transcript(text)
+        except Exception as exc:
+            self._send_json(500, {"error": "local_nlp_failed", "detail": str(exc)})
+            return
+
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "text": polished,
+                "source": "local_nlp",
+            },
+        )
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
@@ -112,8 +215,16 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:
-        if urllib.parse.urlparse(self.path).path != "/api/chat":
-            self._send_json(404, {"error": "Not found"})
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/api/speech/polish":
+            self._handle_speech_polish()
+            return
+        if path == "/api/asr/transcribe":
+            self._handle_asr_transcribe()
+            return
+        if path != "/api/chat":
+            self._discard_request_body()
+            self._send_json(404, {"error": "Not found", "path": path})
             return
 
         req_data, err = self._read_json_body()

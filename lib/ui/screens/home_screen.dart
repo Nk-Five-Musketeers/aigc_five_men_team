@@ -29,6 +29,9 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isRecording = false;
   String _speechMode = '自动识别';
 
+  /// `vivo`：录完上传本地代理；`system`：系统听写。
+  String _speechEngine = 'vivo';
+
   @override
   void dispose() {
     unawaited(VoiceInputService.cancelForDispose());
@@ -59,7 +62,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() => _isRecording = true);
     try {
-      final text = await VoiceInputService.listenOnce(speechMode: _speechMode);
+      final text = await VoiceInputService.listenOnce(
+        speechMode: _speechMode,
+        engine: _speechEngine,
+      );
       if (!mounted) return;
       if (mounted) setState(() => _isRecording = false);
 
@@ -205,11 +211,13 @@ class _HomeScreenState extends State<HomeScreen> {
         return _SettingsView(
           key: ValueKey('settings-${chat.activeUserId}'),
           speechMode: _speechMode,
+          speechEngine: _speechEngine,
           networkOnline: _networkOnline,
           activeUserId: chat.activeUserId,
           onBack: () => _showView(_AppView.home),
           onNearbyTap: () => _showView(_AppView.nearby),
           onModeSelected: (value) => setState(() => _speechMode = value),
+          onEngineSelected: (value) => setState(() => _speechEngine = value),
           onNetworkTap: () => setState(() => _networkOnline = !_networkOnline),
           onAddLocalProfile: _promptAddLocalProfile,
         );
@@ -1146,21 +1154,25 @@ class _SettingsView extends StatelessWidget {
   const _SettingsView({
     super.key,
     required this.speechMode,
+    required this.speechEngine,
     required this.networkOnline,
     required this.activeUserId,
     required this.onBack,
     required this.onNearbyTap,
     required this.onModeSelected,
+    required this.onEngineSelected,
     required this.onNetworkTap,
     required this.onAddLocalProfile,
   });
 
   final String speechMode;
+  final String speechEngine;
   final bool networkOnline;
   final String activeUserId;
   final VoidCallback onBack;
   final VoidCallback onNearbyTap;
   final ValueChanged<String> onModeSelected;
+  final ValueChanged<String> onEngineSelected;
   final VoidCallback onNetworkTap;
   final VoidCallback onAddLocalProfile;
 
@@ -1215,9 +1227,34 @@ class _SettingsView extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const _SectionTitle(
+                icon: Icons.mic_rounded,
+                title: '语音听写引擎',
+                subtitle: '推荐 vivo，需本机已启动本地代理；失败可改系统识别',
+              ),
+              const SizedBox(height: 16),
+              _ModeButton(
+                label: 'vivo 听写（推荐）',
+                active: speechEngine == 'vivo',
+                onTap: () => onEngineSelected('vivo'),
+              ),
+              _ModeButton(
+                label: '系统听写（备用）',
+                active: speechEngine == 'system',
+                onTap: () => onEngineSelected('system'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        _WarmCard(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const _SectionTitle(
                 icon: Icons.record_voice_over_rounded,
-                title: '语音识别模式',
-                subtitle: '默认自动识别，也可手动切换优先模式',
+                title: '系统听写语言偏好',
+                subtitle: '仅在选择「系统听写」时生效',
               ),
               const SizedBox(height: 16),
               _ModeButton(

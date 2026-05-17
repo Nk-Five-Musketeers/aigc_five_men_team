@@ -1,0 +1,2 @@
+# vivo ASR（speech_recognition.py）依赖；聊天代理本身仍可用标准库。
+websocket-client>=1.6.0

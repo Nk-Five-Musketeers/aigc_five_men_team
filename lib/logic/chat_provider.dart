@@ -46,20 +46,59 @@ class ChatProvider extends ChangeNotifier {
   List<RelationConflictRecord> get pendingRelationConflicts =>
       List.unmodifiable(_pendingConflicts);
 
-  /// 语音转写后调用大模型做轻量整理（错字、标点）；代理不可用或超时时返回 [raw]。
+  /// 语音转写后整理：优先大模型润色，失败再本地 NLP，仍失败则返回 [raw]。
   Future<String> polishSpeechBeforeSend(String raw) async {
     await _initFuture;
     final t = raw.trim();
     if (t.isEmpty) return raw;
+
+    final namesHint = await _knownNamesHintForSpeechPolish();
+
     try {
       final polished = await _repository
-          .polishSpeechTranscript(t)
+          .polishSpeechTranscript(t, knownNamesHint: namesHint)
           .timeout(const Duration(seconds: 45));
       final out = polished.trim();
-      return out.isEmpty ? t : out;
+      if (out.isNotEmpty) return out;
     } catch (e, st) {
-      debugPrint('[speech_polish] 使用原文: $e\n$st');
-      return t;
+      debugPrint('[speech_polish] 大模型润色失败，尝试本地: $e\n$st');
+    }
+    try {
+      final polished = await _repository
+          .polishSpeechTranscriptLocal(t)
+          .timeout(const Duration(seconds: 8));
+      final out = polished.trim();
+      if (out.isNotEmpty) return out;
+    } catch (e, st) {
+      debugPrint('[speech_polish] 本地 NLP 不可用: $e\n$st');
+    }
+    return t;
+  }
+
+  /// 供语音润色对照的档案人名/称谓（不写入对话抽取逻辑）。
+  Future<String> _knownNamesHintForSpeechPolish() async {
+    try {
+      final lines = <String>[];
+      final familyRows =
+          await LocalDatabase.listFamilyMembersForUser(_activeUserId);
+      for (final r in familyRows.take(12)) {
+        final name = (r['name'] as String?)?.trim() ?? '';
+        if (name.length < 2) continue;
+        final rel = (r['relation'] as String?)?.trim() ?? '';
+        lines.add(rel.isEmpty ? name : '$rel $name');
+      }
+      final nearbyRows =
+          await LocalDatabase.getNearbyPeopleForUser(_activeUserId);
+      for (final r in nearbyRows.take(12)) {
+        final name = (r['name'] as String?)?.trim() ?? '';
+        if (name.length < 2) continue;
+        final rel = (r['relation'] as String?)?.trim() ?? '';
+        lines.add(rel.isEmpty ? name : '$rel $name');
+      }
+      if (lines.isEmpty) return '';
+      return lines.join('；');
+    } catch (_) {
+      return '';
     }
   }
 

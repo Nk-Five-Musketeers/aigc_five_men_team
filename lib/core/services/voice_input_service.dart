@@ -5,7 +5,9 @@ import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
-/// 封装系统语音识别（手机 / Windows 桌面 / Web 等由插件决定），带初始化与多段超时，避免阻塞。
+import 'vivo_asr_input_service.dart';
+
+/// 语音识别入口：默认 vivo ASR（经本地代理），失败回退系统 [speech_to_text]。
 class VoiceInputService {
   VoiceInputService._();
 
@@ -20,6 +22,9 @@ class VoiceInputService {
 
   /// 已成功 [listen] 且尚未完成 [listenOnce]：此期间忽略引擎中间的 [done]，防止断续、多次收尾。
   static bool _openListenSession = false;
+
+  /// 当前会话是否走 vivo 录音上传（用于 [stopFromUser] 分发）。
+  static bool _sessionUsesVivo = false;
 
   static List<LocaleName>? _cachedLocales;
   static LocaleName? _cachedSystemLocale;
@@ -41,12 +46,15 @@ class VoiceInputService {
 
   /// 进入应用后后台调用：提前 [initialize] + 拉取语言列表，使首次点击「开始说话」后尽快 [listen]。
   static Future<void> prepareEngine() async {
-    try {
-      await _ensureInitialized();
-      await _ensureLocaleCaches();
-    } catch (_) {
-      // 预热失败不阻断，用户点击时会再试
-    }
+    await Future.wait<void>([
+      VivoAsrInputService.prepareEngine(),
+      () async {
+        try {
+          await _ensureInitialized();
+          await _ensureLocaleCaches();
+        } catch (_) {}
+      }(),
+    ]);
   }
 
   static Future<void> _ensureLocaleCaches() async {
@@ -67,6 +75,9 @@ class VoiceInputService {
   }
 
   static bool consumeEndedByUserStop() {
+    if (_sessionUsesVivo) {
+      return VivoAsrInputService.consumeEndedByUserStop();
+    }
     final v = _endedByUserStopButton;
     _endedByUserStopButton = false;
     return v;
@@ -290,9 +301,28 @@ class VoiceInputService {
     }
   }
 
-  /// 开始一次聆听，直到：[stopFromUser]、[listenForMax]（最长 5 分钟）、系统错误或永久错误。
-  /// 识别时段 = 点击开始到点击结束；点击结束时将当前累积的 **全部** 文本合并为一条返回并写入对话。
-  static Future<String> listenOnce({required String speechMode}) async {
+  /// [engine]：`vivo`（默认，录完上传代理）或 `system`（系统听写）。
+  static Future<String> listenOnce({
+    required String speechMode,
+    String engine = 'vivo',
+  }) async {
+    if (engine == 'vivo') {
+      _sessionUsesVivo = true;
+      try {
+        return await VivoAsrInputService.listenOnce();
+      } catch (e, st) {
+        debugPrint('[VoiceInput] vivo ASR 失败，回退系统识别: $e\n$st');
+        _sessionUsesVivo = false;
+        return _listenOnceSystem(speechMode: speechMode);
+      } finally {
+        _sessionUsesVivo = false;
+      }
+    }
+    return _listenOnceSystem(speechMode: speechMode);
+  }
+
+  /// 系统 speech_to_text：开始一次聆听，直到用户结束或超时。
+  static Future<String> _listenOnceSystem({required String speechMode}) async {
     _stopRequested = false;
     _endedByUserStopButton = false;
     _resetTranscript();
@@ -374,6 +404,10 @@ class VoiceInputService {
 
   /// 用户再次点击语音条时调用：尽快结束识别并拿到当前文本。
   static Future<void> stopFromUser() async {
+    if (_sessionUsesVivo) {
+      await VivoAsrInputService.stopFromUser();
+      return;
+    }
     _endedByUserStopButton = true;
     _stopRequested = true;
     try {
@@ -408,7 +442,10 @@ class VoiceInputService {
 
   static Future<void> cancelForDispose() async {
     _stopRequested = true;
-    await _forceStopSession();
+    await Future.wait<void>([
+      VivoAsrInputService.cancelForDispose(),
+      _forceStopSession(),
+    ]);
   }
 }
 

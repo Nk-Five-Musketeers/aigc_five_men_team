@@ -148,6 +148,40 @@ flutter run -d android --dart-define=API_BASE_URL=http://10.0.2.2:8000
 
 ## 四、项目目录结构（便于分工）
 
+```
+aigc_five_men_team/
+├── lib/                          # Flutter 应用（运行时依赖）
+│   ├── main.dart
+│   ├── config/                   # 常量、主题
+│   ├── core/
+│   │   ├── api_client.dart       # Dio → 本地代理
+│   │   ├── services/             # voice_input_service（系统语音识别）
+│   │   └── utils/                # 工具占位（权限、日期等）
+│   ├── data/
+│   │   ├── local_db/             # SQLite（应用主库 bluecare.db）
+│   │   ├── models/               # 当前在用的领域模型
+│   │   │   └── _scaffold/        # 未接入 UI 的模型占位（与服务端表结构对应）
+│   │   └── repositories/         # chat_repository（对话 / 润色 / 抽取）
+│   ├── logic/
+│   │   ├── chat_provider.dart    # 会话、语音润色调度、关系抽取
+│   │   ├── relation_extractor.dart
+│   │   └── _scaffold/            # 未接入的逻辑占位
+│   └── ui/screens/               # home_screen 主界面
+├── server/                       # 本地 Python 服务（运行时依赖）
+│   ├── local_chat_server.py      # :8000 聊天代理（启动时 cwd 建议在项目根或 server）
+│   ├── speech_recognition.py     # vivo 云端 ASR 客户端（独立脚本用）
+│   ├── database.py               # 服务端 SQLite 辅助（与 Flutter 库分离）
+│   ├── prompts/                  # 场景 system 提示词组合
+│   ├── scripts/                  # 开发/填表脚本（非应用启动必需）
+│   └── fixtures/                 # 样例输入与测试库
+├── packages/speech_to_text_windows/  # Windows 语音识别插件补丁
+├── docs/
+│   ├── assets/schema-diagrams/   # 表结构示意图（PNG）
+│   └── reference/vivo-asr-demos/ # vivo ASR 官方 demo（参考，非运行时）
+├── windows/ / web/               # 平台工程
+└── test/                         # Flutter 测试
+```
+
 ### 1. 核心与配置
 
 - `lib/main.dart` — 应用入口，`Provider` 注入 `ChatProvider`。
@@ -157,23 +191,28 @@ flutter run -d android --dart-define=API_BASE_URL=http://10.0.2.2:8000
 
 ### 2. 数据层
 
-- `lib/data/models/` — 聊天消息、抽取的人际关系等模型。
+- `lib/data/models/` — **在用**：`chat_message`、`extracted_relation_hint`、`memory_extraction_payload`、`relation_conflict_record`、`nearby_person`。
+- `lib/data/models/_scaffold/` — **未接入**：与服务端 `database.py` 表对应的占位模型。
 - `lib/data/local_db/local_database.dart` — SQLite 初始化与表结构；桌面使用 `sqflite_common_ffi`，Web 使用 `sqflite_common_ffi_web`。
-- `lib/data/repositories/chat_repository.dart` — 调用 `/api/chat` 等与对话相关的仓库逻辑。
+- `lib/data/repositories/chat_repository.dart` — 调用 `/api/chat`、语音润色、记忆抽取等。
 
 ### 3. 业务逻辑
 
-- `lib/logic/chat_provider.dart` — 会话状态、发送消息、本地持久化与关系抽取调度。
+- `lib/logic/chat_provider.dart` — 会话状态、发送消息、语音润色、本地持久化与关系抽取调度。
 - `lib/logic/relation_extractor.dart` — 从对话中合并、规范化人际关系线索。
 
 ### 4. UI
 
 - `lib/ui/screens/home_screen.dart` — 主界面（陪伴、记忆、设置等）。
 
-### 5. 本地代理
+### 5. 本地代理与脚本
 
 - `server/local_chat_server.py` — 本地 HTTP 代理：读取 `VIVO_APP_KEY` / `APP_KEY`，转发至 vivo 聊天接口。
-- `server/database.py` — 服务端辅助脚本（若后续扩展使用）。
+- `server/speech_recognition.py` — vivo WebSocket ASR（命令行或后续扩展，**非** Flutter 当前语音路径）。
+- `server/database.py` — 服务端辅助 SQLite（与 Flutter `local_database` 独立）。
+- `server/scripts/populate_tables.py` — 填表/导入测试数据。
+- `server/scripts/create_test_user.py` — 创建服务端测试用户。
+- `server/fixtures/` — `sample_input.txt` 与 `fixtures/databases/*.db` 测试库。
 
 ---
 

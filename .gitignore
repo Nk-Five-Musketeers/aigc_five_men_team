@@ -21,3 +21,8 @@ devtools_options.yaml
 .ui_reference/
 __pycache__/
 *.pyc
+server/**/__pycache__/
+
+# 本地生成的服务端库（fixtures 内已跟踪的样例库可保留在 git）
+server/elderly_care.db
+server/test_elderly_care.db

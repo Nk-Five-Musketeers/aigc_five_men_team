@@ -10,6 +10,7 @@ import '../data/models/memory_extraction_payload.dart';
 import '../data/models/relation_conflict_record.dart';
 import '../data/local_db/local_database.dart';
 import '../data/repositories/chat_repository.dart';
+import '../core/services/voice_input_service.dart';
 import 'relation_extractor.dart';
 
 class ChatProvider extends ChangeNotifier {
@@ -45,7 +46,27 @@ class ChatProvider extends ChangeNotifier {
   List<RelationConflictRecord> get pendingRelationConflicts =>
       List.unmodifiable(_pendingConflicts);
 
-  Future<void> sendMessage(String content) async {
+  /// 语音转写后调用大模型做轻量整理（错字、标点）；代理不可用或超时时返回 [raw]。
+  Future<String> polishSpeechBeforeSend(String raw) async {
+    await _initFuture;
+    final t = raw.trim();
+    if (t.isEmpty) return raw;
+    try {
+      final polished = await _repository
+          .polishSpeechTranscript(t)
+          .timeout(const Duration(seconds: 45));
+      final out = polished.trim();
+      return out.isEmpty ? t : out;
+    } catch (e, st) {
+      debugPrint('[speech_polish] 使用原文: $e\n$st');
+      return t;
+    }
+  }
+
+  Future<void> sendMessage(
+    String content, {
+    Duration networkTimeout = const Duration(seconds: 110),
+  }) async {
     await _initFuture;
     final text = content.trim();
     if (text.isEmpty || _isSending) return;
@@ -63,7 +84,7 @@ class ChatProvider extends ChangeNotifier {
             history: _messages,
             promptContext: await _buildPromptContextAsync(),
           )
-          .timeout(const Duration(seconds: 110));
+          .timeout(networkTimeout);
       final assistantMessage = _textMessage(content: reply, isUser: false);
       _messages.add(assistantMessage);
       await _trySaveMessage(assistantMessage);
@@ -412,6 +433,7 @@ class ChatProvider extends ChangeNotifier {
         );
       }
     }
+    unawaited(VoiceInputService.prepareEngine());
     notifyListeners();
   }
 
@@ -759,14 +781,14 @@ class ChatProvider extends ChangeNotifier {
     );
     if (byName != null) return byName;
 
+    // 同一称谓下可有多人：仅当抽取端显式给出 same_relation_key（用户强调「某人不对/记错」等）
+    // 时才按称谓槽位对齐已有行，否则一律新建档案，避免误把新人合并进旧人并弹出冲突。
     final srk = LocalDatabase.normalizeRelationLabel(h.sameRelationKey);
-    final relNorm = LocalDatabase.normalizeRelationLabel(h.relation);
-    final slot = srk.isNotEmpty ? srk : relNorm;
-    if (slot.isEmpty) return null;
+    if (srk.isEmpty) return null;
 
     final candidates = await LocalDatabase.findNearbyPeopleByNormalizedRelation(
       _activeUserId,
-      slot,
+      srk,
     );
     if (candidates.length != 1) return null;
     return candidates.first;

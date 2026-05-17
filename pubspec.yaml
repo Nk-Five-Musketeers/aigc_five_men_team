@@ -18,11 +18,17 @@ dependencies:
   uuid: ^4.5.3
   sqflite_common_ffi: ^2.4.0+3
   sqflite_common_ffi_web: ^1.1.1
+  speech_to_text: ^7.3.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+
+# Windows 官方插件 JSON 与 speech_to_text 解析器不兼容（缺 alternates），见 packages/speech_to_text_windows。
+dependency_overrides:
+  speech_to_text_windows:
+    path: packages/speech_to_text_windows
 
 flutter:
   uses-material-design: true

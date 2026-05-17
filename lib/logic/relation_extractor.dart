@@ -12,6 +12,17 @@ class RelationExtractor {
 
   static final _phoneRe = RegExp(r'1[3-9]\d{9}');
 
+  /// 发言里出现此类措辞且包含对应称谓时，才把该称谓写入 [ExtractedRelationHint.sameRelationKey]，
+  /// 供按槽位对齐档案（触发更正/冲突）；否则允许多位同称谓亲友各自成条。
+  static bool _shouldAnchorRelationSlot(String text, String relation) {
+    if (!text.contains(relation)) return false;
+    return RegExp(
+      r'(搞错|弄错|记错|说错|纠正|更正|记成|其实是|应该说是|并非|'
+      r'不是(?:他|她|这个人)?叫|不叫(?:他|她)?|'
+      r'不对[，,。．]|说错了|重新说)',
+    ).hasMatch(text);
+  }
+
   static final _denyNames = <String>{
     '怎么',
     '什么',
@@ -53,14 +64,16 @@ class RelationExtractor {
       final rel = m.group(1);
       final name = m.group(2);
       if (rel == null || name == null) continue;
-      put(ExtractedRelationHint(name: name, relation: rel));
+      final slot = _shouldAnchorRelationSlot(text, rel) ? rel : null;
+      put(ExtractedRelationHint(name: name, relation: rel, sameRelationKey: slot));
     }
 
     for (final m in _nameThenRel.allMatches(text)) {
       final name = m.group(1);
       final rel = m.group(2);
       if (rel == null || name == null) continue;
-      put(ExtractedRelationHint(name: name, relation: rel));
+      final slot = _shouldAnchorRelationSlot(text, rel) ? rel : null;
+      put(ExtractedRelationHint(name: name, relation: rel, sameRelationKey: slot));
     }
 
     final phones = _phoneRe.allMatches(text).map((e) => e.group(0)!).toList();

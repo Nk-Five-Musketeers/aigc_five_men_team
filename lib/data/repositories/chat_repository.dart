@@ -20,7 +20,7 @@ const _fullMemoryExtractSystemPrompt = '''
       "relation": "女儿/儿子/邻居/朋友等，无则空字符串",
       "phone": "11位手机号或空字符串",
       "note": "一句补充或空字符串",
-      "same_relation_key": "仅姓名更正时填档案称谓，否则空字符串"
+      "same_relation_key": "仅用户明确说「记错/不是某人」需按称谓对齐旧档案时填称谓，普通介绍留空"
     }
   ],
   "elder_profile": {
@@ -84,8 +84,21 @@ daily_life 若非 null，则为对象：
 3. family_members：登记血缘/姻亲或对话中明确为「家里人」的成员，尽量补全结构化字段；is_active 表示是否在世（默认 true）。
 4. memory_events：老人回忆的**往事片段**（通常不是「今天吃了啥」）；每条一事，title 尽量短；无往事则 []。
 5. daily_life：仅当对话明确涉及**某一天**的日常（含「今天」「昨天」及饮食活动心情）时输出对象且 date 必须为 YYYY-MM-DD；无法确定日期则 daily_life 必须为 null。
-6. same_relation_key 规则同 people 旧版说明。
+6. same_relation_key（称谓定位）：**仅当**用户明确否认、纠正某一称谓下**原先所指的那个人**时填写该称谓（如「我女儿不是小红，是小明」「邻居记错了，不叫王芳」）。普通介绍「我女儿叫小丽」「我有个朋友叫阿强」**必须留空字符串**——同一称谓（如多位朋友、多个晚辈）可对应多条 people，留空可避免与旧档案误合并。若用户只是在补充另一位同称谓的亲友，不要填此字段。
 7. 没有可登记人物时 people 为 []；其它数组无内容时为 []。
+''';
+
+/// 语音识别 → 送入主对话前：纠错、断句、去明显口误；不走记忆抽取长 system。
+const _speechPolishSystemPrompt = '''
+你是「语音识别结果整理」模块。用户消息中是一段由语音转写得到的中文文本，可能有同音错字、漏字、重复词、缺少标点。
+
+请只做语言层面的整理，使内容读起来像老人自然说出的原话：
+- 修正明显的错字与同音别字，补全极明显漏字；不要改写语气，不要书面化。
+- 适当加逗号、句号分句；不要改成报告体或列表。
+- 严格保留原意与人名、地名、数字、日期；**禁止**编造新的人名、事件或回答用户问题。
+- 不要加开场白、不要解释过程、不要反问；不要输出「以下是…」等套话。
+
+只输出整理后的正文一段，不要引号、不要 markdown。
 ''';
 
 class ChatRepository {
@@ -129,6 +142,62 @@ class ChatRepository {
       response: response,
       message: '模型返回为空或格式无法识别',
     );
+  }
+
+  /// 调用大模型整理语音识别文本；失败时由调用方回退为原文。
+  ///
+  /// 请求自带 [system] 消息，本地代理不会拼接陪伴场景的长 system（见 `local_chat_server.py`）。
+  Future<String> polishSpeechTranscript(String rawTranscript) async {
+    final raw = rawTranscript.trim();
+    if (raw.isEmpty) return raw;
+
+    final response = await _apiClient.dio.post<Map<String, dynamic>>(
+      '/api/chat',
+      data: <String, dynamic>{
+        'model': AppConstants.modelId,
+        'messages': <Map<String, String>>[
+          {'role': 'system', 'content': _speechPolishSystemPrompt},
+          {'role': 'user', 'content': '【语音识别结果】\n$raw'},
+        ],
+        'temperature': 0.12,
+        'top_p': 0.45,
+        'max_tokens': 2048,
+        'reasoning_effort': 'minimal',
+        'enable_thinking': false,
+      },
+    );
+
+    final text = _extractAssistantText(response.data);
+    if (text == null || text.trim().isEmpty) {
+      throw DioException(
+        requestOptions: response.requestOptions,
+        response: response,
+        message: '润色结果为空',
+      );
+    }
+    return _normalizePolishedSpeechOutput(text);
+  }
+
+  String _normalizePolishedSpeechOutput(String raw) {
+    var s = _stripCodeFence(raw).trim();
+    s = s.replaceFirst(
+      RegExp(r'^(修正后|润色后|输出文本|输出结果|整理后)[:：]\s*', multiLine: true),
+      '',
+    );
+    s = s.trim();
+    if (s.length >= 2) {
+      final first = s[0];
+      final last = s[s.length - 1];
+      const ldq = '\u201C';
+      const rdq = '\u201D';
+      if ((first == '"' || first == ldq) && (last == '"' || last == rdq)) {
+        s = s.substring(1, s.length - 1).trim();
+      }
+    }
+    if (s.length >= 2 && s[0] == '「' && s[s.length - 1] == '」') {
+      s = s.substring(1, s.length - 1).trim();
+    }
+    return s.trim();
   }
 
   /// 兼容多种 OpenAI 风格返回（字符串 content、分片列表、reasoning 字段、delta 等）。

@@ -1236,6 +1236,7 @@ class LocalDatabase {
         'relation' => 'relation',
         'phone' => 'phone',
         'note' => 'note',
+        'name' => 'name',
         _ => null,
       };
       if (col != null) {
@@ -1251,15 +1252,7 @@ class LocalDatabase {
       }
     }
 
-    await db.update(
-      'relation_conflicts',
-      {
-        'status': useNew ? 'use_new' : 'keep_old',
-        'resolved_at': DateTime.now().toIso8601String(),
-      },
-      where: 'id = ?',
-      whereArgs: [conflictId],
-    );
+    await db.delete('relation_conflicts', where: 'id = ?', whereArgs: [conflictId]);
   }
 
   /// 合并写入备注（无冲突时追加）。

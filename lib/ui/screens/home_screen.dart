@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../config/theme.dart';
+import '../../core/services/voice_input_service.dart';
 import '../../data/models/chat_message.dart';
 import '../../data/models/nearby_person.dart';
 import '../../data/models/relation_conflict_record.dart';
@@ -28,6 +31,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    unawaited(VoiceInputService.cancelForDispose());
     _messageController.dispose();
     super.dispose();
   }
@@ -43,15 +47,64 @@ class _HomeScreenState extends State<HomeScreen> {
     await context.read<ChatProvider>().sendMessage(text);
   }
 
-  void _onVoiceButtonTap() {
+  Future<void> _onVoiceButtonTap() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
     final chat = context.read<ChatProvider>();
     if (chat.isSending) return;
 
     if (_isRecording) {
-      setState(() => _isRecording = false);
-      chat.sendMessage('我想和你聊聊今天的事。');
-    } else {
-      setState(() => _isRecording = true);
+      await VoiceInputService.stopFromUser();
+      return;
+    }
+
+    setState(() => _isRecording = true);
+    try {
+      final text = await VoiceInputService.listenOnce(speechMode: _speechMode);
+      if (!mounted) return;
+      if (mounted) setState(() => _isRecording = false);
+
+      final trimmed = text.trim();
+      final userStopped = VoiceInputService.consumeEndedByUserStop();
+
+      if (trimmed.isNotEmpty) {
+        final polished = await chat.polishSpeechBeforeSend(trimmed);
+        if (!mounted) return;
+        await chat.sendMessage(
+          polished,
+          networkTimeout: const Duration(seconds: 180),
+        );
+      } else if (!userStopped) {
+        messenger?.showSnackBar(
+          const SnackBar(
+            content: Text('没听到内容，请再试一次或使用键盘输入。'),
+          ),
+        );
+      }
+    } on TimeoutException catch (_) {
+      if (mounted) {
+        messenger?.showSnackBar(
+          const SnackBar(
+            content: Text('语音识别初始化超时，请检查麦克风后重试或使用键盘输入。'),
+          ),
+        );
+      }
+    } on VoiceInputUnavailableException catch (e) {
+      if (mounted) {
+        messenger?.showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    } on VoiceInputListenException catch (e) {
+      if (mounted) {
+        messenger?.showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    } catch (e) {
+      if (mounted) {
+        messenger?.showSnackBar(
+          SnackBar(content: Text('语音识别异常：$e')),
+        );
+      }
+    } finally {
+      VoiceInputService.consumeEndedByUserStop();
+      if (mounted) setState(() => _isRecording = false);
     }
   }
 
@@ -1455,17 +1508,16 @@ class _BottomVoiceBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final voiceActive = isRecording || isSending;
     final voiceLabel = isSending
         ? '正在回应'
         : isRecording
-            ? '正在听您说话...'
+            ? '正在识别'
             : '点击开始说话';
     final voiceSub = isSending
         ? '请稍候'
         : isRecording
-            ? '再次点击结束'
-            : '说出你想说的话';
+            ? '说完请点击结束发送'
+            : '点击后立即开始识别';
 
     return _WarmCard(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),

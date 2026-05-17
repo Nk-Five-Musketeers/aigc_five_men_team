@@ -77,7 +77,15 @@ packages:
     dependency: transitive
     description:
       name: dev_build
+<<<<<<< HEAD
       sha256: "6262a63d07eaa9a348cf787d6ebab023244409124a03dd96c1ff51bce217cdf1"
+=======
+<<<<<<< Updated upstream
+      sha256: fab11ef55932f5805c405a7597ae5c7e0908e33c0120bd7a9dfda44bdf86c35f
+=======
+      sha256: "6262a63d07eaa9a348cf787d6ebab023244409124a03dd96c1ff51bce217cdf1"
+>>>>>>> Stashed changes
+>>>>>>> origin/CAI
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "1.1.7"
@@ -184,6 +192,11 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "4.1.2"
+<<<<<<< HEAD
+=======
+<<<<<<< Updated upstream
+=======
+>>>>>>> origin/CAI
   json_annotation:
     dependency: transitive
     description:
@@ -192,6 +205,10 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "4.12.0"
+<<<<<<< HEAD
+=======
+>>>>>>> Stashed changes
+>>>>>>> origin/CAI
   leak_tracker:
     dependency: transitive
     description:
@@ -288,6 +305,11 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "1.9.1"
+<<<<<<< HEAD
+=======
+<<<<<<< Updated upstream
+=======
+>>>>>>> origin/CAI
   pedantic:
     dependency: transitive
     description:
@@ -296,6 +318,10 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "1.11.1"
+<<<<<<< HEAD
+=======
+>>>>>>> Stashed changes
+>>>>>>> origin/CAI
   platform:
     dependency: transitive
     description:
@@ -324,7 +350,15 @@ packages:
     dependency: transitive
     description:
       name: process_run
+<<<<<<< HEAD
       sha256: ceff9c426ad0a08927e1b36b4ef6fa3a12270eb8c134917278865bcf1fc02805
+=======
+<<<<<<< Updated upstream
+      sha256: "8bdbe7ec335391ad32e5119cdcecaa7f679bc924fc5a5d7e8bc7a8fbd22592a1"
+=======
+      sha256: ceff9c426ad0a08927e1b36b4ef6fa3a12270eb8c134917278865bcf1fc02805
+>>>>>>> Stashed changes
+>>>>>>> origin/CAI
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "1.3.3"
@@ -365,6 +399,11 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "1.10.2"
+<<<<<<< HEAD
+=======
+<<<<<<< Updated upstream
+=======
+>>>>>>> origin/CAI
   speech_to_text:
     dependency: "direct main"
     description:
@@ -388,6 +427,10 @@ packages:
       relative: true
     source: path
     version: "1.0.0+beta.8-patch.1"
+<<<<<<< HEAD
+=======
+>>>>>>> Stashed changes
+>>>>>>> origin/CAI
   sqflite:
     dependency: "direct main"
     description:
@@ -408,7 +451,15 @@ packages:
     dependency: transitive
     description:
       name: sqflite_common
+<<<<<<< HEAD
       sha256: f8a08a13fb8f0f8c590df89d745000bed44a673ed94bac846739e1a016875c21
+=======
+<<<<<<< Updated upstream
+      sha256: "5e8377564d95166761a968ed96104e0569b6b6cc611faac92a36ab8a169112c3"
+=======
+      sha256: f8a08a13fb8f0f8c590df89d745000bed44a673ed94bac846739e1a016875c21
+>>>>>>> Stashed changes
+>>>>>>> origin/CAI
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "2.5.7"

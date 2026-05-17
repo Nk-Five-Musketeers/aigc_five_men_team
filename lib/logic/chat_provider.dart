@@ -12,6 +12,7 @@ import '../data/local_db/local_database.dart';
 import '../data/repositories/chat_repository.dart';
 import '../core/services/voice_input_service.dart';
 import 'relation_extractor.dart';
+import 'prompt_task_router.dart';
 
 class ChatProvider extends ChangeNotifier {
   ChatProvider({ChatRepository? repository})
@@ -34,6 +35,7 @@ class ChatProvider extends ChangeNotifier {
 
   bool _isSending = false;
   int _userTurnCount = 0;
+  String _lastUserText = '';
 
   bool get isSending => _isSending;
 
@@ -72,6 +74,7 @@ class ChatProvider extends ChangeNotifier {
     if (text.isEmpty || _isSending) return;
 
     _userTurnCount += 1;
+    _lastUserText = text;
     final userMessage = _textMessage(content: text, isUser: true);
     _messages.add(userMessage);
     await _trySaveMessage(userMessage);
@@ -355,22 +358,69 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  /// 与 `server/prompts` 中全局模块对齐；记忆摘要来自本地库。
+  /// 与 `server/prompts` v1.1 对齐；通过 PromptTaskRouter 决定 active_task。
   Future<Map<String, dynamic>> _buildPromptContextAsync() async {
-    final memoryText = await _memoryBulletsForPrompt();
-    final snippets = memoryText
-        .split('\n')
+    try {
+      final user = await LocalDatabase.getUserById(_activeUserId);
+      final route = await PromptTaskRouter.resolve(
+        userText: _lastUserText,
+        ownerUserId: _activeUserId,
+        recentHistory: _messages,
+      );
+      return <String, dynamic>{
+        'global': <String, dynamic>{
+          'dialect': (user?['dialect'] as String?)?.trim().isNotEmpty == true
+              ? user!['dialect']
+              : '天津话',
+          'sensitive_topics': _splitTaboo(user?['taboo'] as String?),
+          'memory_snippets': route.memorySnippets,
+          'elder_profile_brief': _buildElderBrief(user),
+        },
+        if (route.activeTask != null) 'active_task': route.activeTask,
+        if (route.activeTask != null) 'task': route.taskParams,
+      };
+    } catch (_) {
+      // 降级：仅 global，无任务模块
+      return <String, dynamic>{
+        'global': <String, dynamic>{
+          'dialect': '天津话',
+          'sensitive_topics': <String>[],
+          'memory_snippets': <String>[],
+          'elder_profile_brief': '（暂无详细档案）',
+        },
+      };
+    }
+  }
+
+  /// 从 users.taboo 字段拆分敏感话题列表。
+  static List<String> _splitTaboo(String? taboo) {
+    if (taboo == null || taboo.trim().isEmpty) return <String>[];
+    return taboo
+        .split(RegExp(r'[,，;；、\s]+'))
         .map((s) => s.trim())
         .where((s) => s.isNotEmpty)
         .toList();
-    return <String, dynamic>{
-      'global': <String, dynamic>{
-        'dialect_preference': 0.65,
-        'response_style': '简短温柔',
-        'sensitive_topics': <String>[],
-        'memory_snippets': snippets,
-      },
-    };
+  }
+
+  /// 从 users 档案拼成一行简短老人画像（≤ 80 字）。
+  static String _buildElderBrief(Map<String, dynamic>? user) {
+    if (user == null) return '（暂无详细档案）';
+    final parts = <String>[];
+    void add(String label, String key) {
+      final v = (user[key] as String?)?.trim();
+      if (v != null && v.isNotEmpty) {
+        parts.add('$label$v');
+      }
+    }
+
+    add('', 'name');
+    add('', 'birth_year');
+    add('籍贯', 'hometown');
+    add('职业', 'career');
+    add('爱好', 'hobbies');
+    add('性格', 'personality');
+    if (parts.isEmpty) return '（暂无详细档案）';
+    return parts.join('，');
   }
 
   String _buildErrorMessage(Object error) {

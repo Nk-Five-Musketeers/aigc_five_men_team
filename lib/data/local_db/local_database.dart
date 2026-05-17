@@ -1,4 +1,4 @@
-﻿import 'dart:convert';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -14,7 +14,7 @@ class LocalDatabase {
   static bool _dbFactoryReady = false;
 
   static const _dbName = 'bluecare.db';
-  static const _dbVersion = 5;
+  static const _dbVersion = 6;
 
   static const legacyDefaultUserId = 'local_user_default';
   static const legacyDefaultConversationId = 'local_conversation_home';
@@ -40,6 +40,10 @@ class LocalDatabase {
       },
       onOpen: (db) async {
         await _repairSchemaIfIncomplete(db);
+        await _ensureUserProfileColumns(db);
+        await _ensureNearbyPersonSearchColumns(db);
+        await _backfillNearbyPersonSearchColumns(db, onlyMissing: true);
+        await _ensureIndexes(db);
       },
     );
 
@@ -183,7 +187,9 @@ class LocalDatabase {
         id TEXT PRIMARY KEY,
         owner_user_id TEXT NOT NULL,
         name TEXT,
+        normalized_name TEXT,
         relation TEXT,
+        normalized_relation TEXT,
         phone TEXT,
         address TEXT,
         note TEXT,
@@ -300,6 +306,39 @@ class LocalDatabase {
         'CREATE INDEX IF NOT EXISTS idx_daily_life_owner_date ON daily_life_records(owner_user_id, date DESC)');
   }
 
+  static Future<void> _ensureIndexes(Database db) async {
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_messages_conversation_timestamp ON messages(conversation_id, timestamp DESC)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_nearby_people_owner ON nearby_people(owner_user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_nearby_people_owner_name_norm ON nearby_people(owner_user_id, normalized_name)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_nearby_people_owner_relation_norm ON nearby_people(owner_user_id, normalized_relation)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_family_members_owner ON family_members(owner_user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_family_members_lookup ON family_members(owner_user_id, name, relation)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_memory_events_owner ON memory_events(owner_user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_memory_events_lookup ON memory_events(owner_user_id, title, event_time)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_daily_life_owner_date ON daily_life_records(owner_user_id, date DESC)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_relation_conflicts_owner ON relation_conflicts(owner_user_id, status)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_relation_conflicts_nearby_pending ON relation_conflicts(nearby_person_id, status)');
+  }
+
   static Future<void> _upgradeSchema(
       Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
@@ -309,7 +348,9 @@ class LocalDatabase {
           id TEXT PRIMARY KEY,
           owner_user_id TEXT NOT NULL,
           name TEXT,
+          normalized_name TEXT,
           relation TEXT,
+          normalized_relation TEXT,
           phone TEXT,
           address TEXT,
           note TEXT,
@@ -333,7 +374,8 @@ class LocalDatabase {
     }
     if (oldVersion < 4) {
       try {
-        await db.execute('ALTER TABLE conversations ADD COLUMN owner_user_id TEXT');
+        await db
+            .execute('ALTER TABLE conversations ADD COLUMN owner_user_id TEXT');
       } catch (_) {
         // Column may already exist on partial installs.
       }
@@ -362,26 +404,106 @@ class LocalDatabase {
           'CREATE INDEX IF NOT EXISTS idx_relation_conflicts_owner ON relation_conflicts(owner_user_id, status)');
     }
     if (oldVersion < 5) {
-      Future<void> tryAddUserColumn(String sql) async {
-        try {
-          await db.execute(sql);
-        } catch (_) {}
-      }
-
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN updated_at TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN birth_year TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN hometown TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN career TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN hobbies TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN food_preference TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN personality TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN taboo TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN dialect TEXT');
-
+      await _ensureUserProfileColumns(db);
       await _createFamilyMemoryDailyTables(db);
+    }
+    if (oldVersion < 6) {
+      await _ensureNearbyPersonSearchColumns(db);
+      await _backfillNearbyPersonSearchColumns(db);
     }
     if (newVersion > _dbVersion) {
       return;
+    }
+  }
+
+  static Future<void> _ensureNearbyPersonSearchColumns(Database db) async {
+    if (!await _tableExists(db, 'nearby_people')) return;
+
+    Future<void> tryAddColumn(String sql) async {
+      try {
+        await db.execute(sql);
+      } catch (_) {
+        // Column may already exist on partially upgraded installs.
+      }
+    }
+
+    await tryAddColumn(
+      'ALTER TABLE nearby_people ADD COLUMN normalized_name TEXT',
+    );
+    await tryAddColumn(
+      'ALTER TABLE nearby_people ADD COLUMN normalized_relation TEXT',
+    );
+  }
+
+  static Future<void> _ensureUserProfileColumns(Database db) async {
+    if (!await _tableExists(db, 'users')) return;
+
+    Future<void> tryAddColumn(String sql) async {
+      try {
+        await db.execute(sql);
+      } catch (_) {
+        // Column may already exist on partially upgraded installs.
+      }
+    }
+
+    await tryAddColumn('ALTER TABLE users ADD COLUMN updated_at TEXT');
+    await tryAddColumn('ALTER TABLE users ADD COLUMN birth_year TEXT');
+    await tryAddColumn('ALTER TABLE users ADD COLUMN hometown TEXT');
+    await tryAddColumn('ALTER TABLE users ADD COLUMN career TEXT');
+    await tryAddColumn('ALTER TABLE users ADD COLUMN hobbies TEXT');
+    await tryAddColumn('ALTER TABLE users ADD COLUMN food_preference TEXT');
+    await tryAddColumn('ALTER TABLE users ADD COLUMN personality TEXT');
+    await tryAddColumn('ALTER TABLE users ADD COLUMN taboo TEXT');
+    await tryAddColumn('ALTER TABLE users ADD COLUMN dialect TEXT');
+  }
+
+  static Future<void> _backfillNearbyPersonSearchColumns(
+    Database db, {
+    bool onlyMissing = false,
+  }) async {
+    if (!await _tableExists(db, 'nearby_people')) return;
+
+    final rows = await db.query(
+      'nearby_people',
+      columns: [
+        'id',
+        'name',
+        'relation',
+        'normalized_name',
+        'normalized_relation',
+      ],
+      where: onlyMissing
+          ? 'normalized_name IS NULL OR normalized_relation IS NULL'
+          : null,
+    );
+    if (rows.isEmpty) return;
+
+    final batch = db.batch();
+    var hasChanges = false;
+    for (final row in rows) {
+      final normalizedName = _nullIfEmpty(
+        normalizePersonName(row['name'] as String?),
+      );
+      final normalizedRelation = _nullIfEmpty(
+        normalizeRelationLabel(row['relation'] as String?),
+      );
+      if (_dbValuesEqual(row['normalized_name'], normalizedName) &&
+          _dbValuesEqual(row['normalized_relation'], normalizedRelation)) {
+        continue;
+      }
+      batch.update(
+        'nearby_people',
+        {
+          'normalized_name': normalizedName,
+          'normalized_relation': normalizedRelation,
+        },
+        where: 'id = ?',
+        whereArgs: [row['id']],
+      );
+      hasChanges = true;
+    }
+    if (hasChanges) {
+      await batch.commit(noResult: true);
     }
   }
 
@@ -519,10 +641,80 @@ class LocalDatabase {
     return result.isNotEmpty;
   }
 
+  static String? _nullIfEmpty(String value) {
+    return value.isEmpty ? null : value;
+  }
+
+  static bool _dbValuesEqual(Object? left, Object? right) => left == right;
+
+  static Future<Map<String, dynamic>?> _getRowById(
+    Database db,
+    String table,
+    Object id, {
+    String idColumn = 'id',
+  }) async {
+    final rows = await db.query(
+      table,
+      where: '$idColumn = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return rows.first;
+  }
+
+  static Future<void> _upsertByPrimaryKey(
+    Database db,
+    String table,
+    Map<String, dynamic> values, {
+    String idColumn = 'id',
+    Set<String> immutableOnUpdate = const <String>{},
+    bool touchUpdatedAt = false,
+  }) async {
+    final id = values[idColumn];
+    if (id == null || (id is String && id.trim().isEmpty)) {
+      throw ArgumentError('$table.$idColumn 不能为空');
+    }
+
+    final payload = Map<String, dynamic>.from(values);
+    final existing = await _getRowById(db, table, id, idColumn: idColumn);
+    if (existing == null) {
+      await db.insert(table, payload);
+      return;
+    }
+
+    final patch = <String, dynamic>{};
+    payload.forEach((key, value) {
+      if (key == idColumn || immutableOnUpdate.contains(key)) return;
+      if (_dbValuesEqual(existing[key], value)) return;
+      patch[key] = value;
+    });
+
+    if (patch.isEmpty) return;
+    if (touchUpdatedAt && !patch.containsKey('updated_at')) {
+      patch['updated_at'] = DateTime.now().toIso8601String();
+    }
+
+    await db.update(
+      table,
+      patch,
+      where: '$idColumn = ?',
+      whereArgs: [id],
+    );
+  }
+
   static Future<void> insertUser(Map<String, dynamic> user) async {
     final db = await instance();
-    await db.insert('users', user,
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    final payload = Map<String, dynamic>.from(user);
+    payload['created_at'] =
+        payload['created_at'] ?? DateTime.now().toIso8601String();
+    await _upsertByPrimaryKey(
+      db,
+      'users',
+      payload,
+      immutableOnUpdate: const <String>{'created_at'},
+      touchUpdatedAt: true,
+    );
   }
 
   /// 按用户 id 局部更新老人基本信息表字段（不包含 id）；未出现在 [values] 中的列保持不变。
@@ -543,7 +735,8 @@ class LocalDatabase {
   }
 
   /// [nearby_people] / [relation_conflicts] 引用 users(id)，若缺少对应行，插入会因外键失败。
-  static Future<void> ensureUserExists(String userId, {String? displayName}) async {
+  static Future<void> ensureUserExists(String userId,
+      {String? displayName}) async {
     final db = await instance();
     final name = (displayName ?? '使用者').trim();
     await db.insert(
@@ -566,7 +759,8 @@ class LocalDatabase {
   }) async {
     await ensureUserExists(userId);
     final db = await instance();
-    final rows = await db.query('users', where: 'id = ?', whereArgs: [userId], limit: 1);
+    final rows =
+        await db.query('users', where: 'id = ?', whereArgs: [userId], limit: 1);
     var meta = <String, dynamic>{};
     if (rows.isNotEmpty) {
       final raw = rows.first['metadata'] as String?;
@@ -594,8 +788,15 @@ class LocalDatabase {
 
   static Future<void> createConversation(Map<String, dynamic> convo) async {
     final db = await instance();
-    await db.insert('conversations', convo,
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    final payload = Map<String, dynamic>.from(convo);
+    payload['created_at'] =
+        payload['created_at'] ?? DateTime.now().toIso8601String();
+    await _upsertByPrimaryKey(
+      db,
+      'conversations',
+      payload,
+      immutableOnUpdate: const <String>{'created_at'},
+    );
   }
 
   static Future<void> addConversationMember(
@@ -615,12 +816,13 @@ class LocalDatabase {
 
   static Future<void> insertMessage(Map<String, dynamic> message) async {
     final db = await instance();
-    await db.insert('messages', message,
-        conflictAlgorithm: ConflictAlgorithm.replace);
-    // update conversation last_message_id
-    if (message.containsKey('conversation_id') && message.containsKey('id')) {
-      await db.update('conversations', {'last_message_id': message['id']},
-          where: 'id = ?', whereArgs: [message['conversation_id']]);
+    await _upsertByPrimaryKey(
+        db, 'messages', Map<String, dynamic>.from(message));
+    if (message.containsKey('conversation_id')) {
+      final conversationId = message['conversation_id'] as String?;
+      if (conversationId != null && conversationId.isNotEmpty) {
+        await _refreshConversationLastMessageId(db, conversationId);
+      }
     }
   }
 
@@ -656,8 +858,11 @@ class LocalDatabase {
 
   static Future<void> insertAttachment(Map<String, dynamic> attachment) async {
     final db = await instance();
-    await db.insert('attachments', attachment,
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    await _upsertByPrimaryKey(
+      db,
+      'attachments',
+      Map<String, dynamic>.from(attachment),
+    );
   }
 
   static Future<List<Map<String, dynamic>>> getAttachmentsForMessage(
@@ -672,14 +877,29 @@ class LocalDatabase {
     final db = await instance();
     final now = DateTime.now().toIso8601String();
     final payload = Map<String, dynamic>.from(nearbyPerson);
-    payload['updated_at'] = payload['updated_at'] ?? now;
     payload['created_at'] = payload['created_at'] ?? now;
+    payload['updated_at'] = payload['updated_at'] ?? now;
+    if (payload.containsKey('name')) {
+      payload['normalized_name'] = _nullIfEmpty(
+        normalizePersonName(payload['name'] as String?),
+      );
+    }
+    if (payload.containsKey('relation')) {
+      payload['normalized_relation'] = _nullIfEmpty(
+        normalizeRelationLabel(payload['relation'] as String?),
+      );
+    }
     final oid = payload['owner_user_id'] as String?;
     if (oid != null) {
       await ensureUserExists(oid);
     }
-    await db.insert('nearby_people', payload,
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    await _upsertByPrimaryKey(
+      db,
+      'nearby_people',
+      payload,
+      immutableOnUpdate: const <String>{'created_at'},
+      touchUpdatedAt: true,
+    );
   }
 
   static Future<List<Map<String, dynamic>>> getNearbyPeopleForUser(
@@ -698,6 +918,11 @@ class LocalDatabase {
     return await db.delete('nearby_people', where: 'id = ?', whereArgs: [id]);
   }
 
+  static Future<Map<String, dynamic>?> getNearbyPersonById(String id) async {
+    final db = await instance();
+    return _getRowById(db, 'nearby_people', id);
+  }
+
   /// 人物姓名用于匹配时的规范化（与抽取逻辑一致）。
   static String normalizePersonName(String? name) {
     if (name == null) return '';
@@ -711,17 +936,19 @@ class LocalDatabase {
   }
 
   /// 同一使用者名下，称谓规范化后相同的周围人条目（可能 0/1/多条）。
-  static Future<List<Map<String, dynamic>>> findNearbyPeopleByNormalizedRelation(
+  static Future<List<Map<String, dynamic>>>
+      findNearbyPeopleByNormalizedRelation(
     String ownerUserId,
     String normalizedRelation,
   ) async {
     if (normalizedRelation.isEmpty) return [];
-    final rows = await getNearbyPeopleForUser(ownerUserId);
-    return rows
-        .where((r) =>
-            normalizeRelationLabel(r['relation'] as String?) ==
-            normalizedRelation)
-        .toList();
+    final db = await instance();
+    return db.query(
+      'nearby_people',
+      where: 'owner_user_id = ? AND normalized_relation = ?',
+      whereArgs: [ownerUserId, normalizedRelation],
+      orderBy: 'is_emergency_contact DESC, updated_at DESC',
+    );
   }
 
   /// 将 [removeId] 的非空字段合并进 [keepId]（不覆盖已有非空值），再删除冗余行，并把待处理冲突挂到保留行上。
@@ -770,7 +997,8 @@ class LocalDatabase {
     }
 
     if (patch.length > 1) {
-      await db.update('nearby_people', patch, where: 'id = ?', whereArgs: [keepId]);
+      await db
+          .update('nearby_people', patch, where: 'id = ?', whereArgs: [keepId]);
     }
 
     await db.update(
@@ -780,38 +1008,6 @@ class LocalDatabase {
       whereArgs: [removeId, 'pending'],
     );
     await db.delete('nearby_people', where: 'id = ?', whereArgs: [removeId]);
-  }
-
-  static Future<void> _dedupeNearbyPeopleSameNameAndRelation(
-    Database db,
-    String ownerUserId,
-    String primaryId,
-    String newName,
-  ) async {
-    final primaryRows = await db.query(
-      'nearby_people',
-      where: 'id = ?',
-      whereArgs: [primaryId],
-      limit: 1,
-    );
-    if (primaryRows.isEmpty) return;
-    final primary = primaryRows.first;
-    final rel = normalizeRelationLabel(primary['relation'] as String?);
-    final normName = normalizePersonName(newName);
-    if (normName.isEmpty || rel.isEmpty) return;
-
-    final all = await db.query(
-      'nearby_people',
-      where: 'owner_user_id = ?',
-      whereArgs: [ownerUserId],
-    );
-    for (final row in all) {
-      final rid = row['id'] as String;
-      if (rid == primaryId) continue;
-      if (normalizePersonName(row['name'] as String?) != normName) continue;
-      if (normalizeRelationLabel(row['relation'] as String?) != rel) continue;
-      await mergeNearbyPersonAbsorbDuplicate(keepId: primaryId, removeId: rid);
-    }
   }
 
   static Future<List<Map<String, dynamic>>> listUsers() async {
@@ -825,12 +1021,16 @@ class LocalDatabase {
     String normalizedName,
   ) async {
     if (normalizedName.isEmpty) return null;
-    final rows = await getNearbyPeopleForUser(ownerUserId);
-    for (final r in rows) {
-      final n = normalizePersonName(r['name'] as String?);
-      if (n == normalizedName) return r;
-    }
-    return null;
+    final db = await instance();
+    final rows = await db.query(
+      'nearby_people',
+      where: 'owner_user_id = ? AND normalized_name = ?',
+      whereArgs: [ownerUserId, normalizedName],
+      orderBy: 'is_emergency_contact DESC, updated_at DESC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return rows.first;
   }
 
   // --- 表2：家庭成员 family_members ---
@@ -1034,7 +1234,8 @@ class LocalDatabase {
     patch.remove('date');
     if (patch.isEmpty) return 0;
     patch['updated_at'] = DateTime.now().toIso8601String();
-    return db.update('daily_life_records', patch, where: 'id = ?', whereArgs: [id]);
+    return db
+        .update('daily_life_records', patch, where: 'id = ?', whereArgs: [id]);
   }
 
   static Future<int> deleteDailyLifeRecord(int id) async {
@@ -1082,7 +1283,8 @@ class LocalDatabase {
   }
 
   /// 同一使用者同一天仅一条：存在则更新当日字段。
-  static Future<int> upsertDailyLifeRecordByDate(Map<String, dynamic> row) async {
+  static Future<int> upsertDailyLifeRecordByDate(
+      Map<String, dynamic> row) async {
     final ownerUserId = row['owner_user_id'] as String?;
     final date = row['date'] as String?;
     if (ownerUserId == null ||
@@ -1107,6 +1309,7 @@ class LocalDatabase {
 
   /// 每位使用者对应一个主会话；默认老人账号沿用历史 id `local_conversation_home`。
   static Future<String> ensureHomeConversationForUser(String userId) async {
+    await ensureUserExists(userId);
     final db = await instance();
     final existing = await db.query(
       'conversations',
@@ -1168,8 +1371,7 @@ class LocalDatabase {
     final db = await instance();
     return db.delete(
       'relation_conflicts',
-      where:
-          'owner_user_id = ? AND nearby_person_id = ? AND status = ?',
+      where: 'owner_user_id = ? AND nearby_person_id = ? AND status = ?',
       whereArgs: [ownerUserId, nearbyPersonId, 'pending'],
     );
   }
@@ -1252,7 +1454,8 @@ class LocalDatabase {
       }
     }
 
-    await db.delete('relation_conflicts', where: 'id = ?', whereArgs: [conflictId]);
+    await db
+        .delete('relation_conflicts', where: 'id = ?', whereArgs: [conflictId]);
   }
 
   /// 合并写入备注（无冲突时追加）。
@@ -1303,7 +1506,8 @@ class LocalDatabase {
   }
 
   /// 清空某会话下的全部消息。
-  static Future<int> deleteAllMessagesInConversation(String conversationId) async {
+  static Future<int> deleteAllMessagesInConversation(
+      String conversationId) async {
     final db = await instance();
     final n = await db.delete(
       'messages',
@@ -1329,8 +1533,7 @@ class LocalDatabase {
       orderBy: 'timestamp DESC',
       limit: 1,
     );
-    final lastId =
-        latest.isEmpty ? null : latest.first['id'] as String?;
+    final lastId = latest.isEmpty ? null : latest.first['id'] as String?;
     await db.update(
       'conversations',
       {'last_message_id': lastId},

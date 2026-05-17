@@ -508,8 +508,7 @@ class ChatProvider extends ChangeNotifier {
 
       var hints = payload.people;
       if (hints.isEmpty) {
-        final fullText =
-            transcript.map((e) => e['content'] ?? '').join('\n');
+        final fullText = transcript.map((e) => e['content'] ?? '').join('\n');
         hints = RelationExtractor.extract(fullText);
         ruleHintCount = hints.length;
       }
@@ -859,11 +858,7 @@ class ChatProvider extends ChangeNotifier {
     }
 
     Future<Map<String, dynamic>?> freshNearbyRow() async {
-      final rows = await LocalDatabase.getNearbyPeopleForUser(_activeUserId);
-      for (final r in rows) {
-        if (r['id'] == id) return r;
-      }
-      return null;
+      return LocalDatabase.getNearbyPersonById(id);
     }
 
     if (h.relation != null) {
@@ -896,7 +891,8 @@ class ChatProvider extends ChangeNotifier {
 
     if (h.note != null && h.note!.trim().isNotEmpty) {
       final n = h.note!.trim();
-      if (!_meaningfullyDifferent(oldNote, n) && (oldNote ?? '').trim().isEmpty) {
+      if (!_meaningfullyDifferent(oldNote, n) &&
+          (oldNote ?? '').trim().isEmpty) {
         final cur = await freshNearbyRow();
         if (cur != null) {
           await LocalDatabase.upsertNearbyPerson({

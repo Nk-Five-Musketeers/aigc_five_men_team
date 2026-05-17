@@ -14,11 +14,7 @@ class LocalDatabase {
   static bool _dbFactoryReady = false;
 
   static const _dbName = 'bluecare.db';
-<<<<<<< Updated upstream
-  static const _dbVersion = 4;
-=======
   static const _dbVersion = 6;
->>>>>>> Stashed changes
 
   static const legacyDefaultUserId = 'local_user_default';
   static const legacyDefaultConversationId = 'local_conversation_home';
@@ -47,8 +43,6 @@ class LocalDatabase {
     return _db!;
   }
 
-<<<<<<< Updated upstream
-=======
   /// 业务所需全部表名；用于检测「仅有 bluecare.db 文件且 user_version 已对齐，但从未执行过建表」的损坏状态。
   static const List<String> _requiredApplicationTables = <String>[
     'users',
@@ -77,7 +71,6 @@ class LocalDatabase {
     }
   }
 
->>>>>>> Stashed changes
   static Future<String> getDatabasePathForDebug() async {
     _initDatabaseFactoryForCurrentPlatform();
     final dbPath = await getDatabasesPath();
@@ -218,9 +211,6 @@ class LocalDatabase {
       )
     ''');
     await db.execute(
-<<<<<<< Updated upstream
-        'CREATE INDEX idx_relation_conflicts_owner ON relation_conflicts(owner_user_id, status)');
-=======
         'CREATE INDEX IF NOT EXISTS idx_relation_conflicts_owner ON relation_conflicts(owner_user_id, status)');
   }
 
@@ -311,7 +301,6 @@ class LocalDatabase {
     ''');
     await db.execute(
         'CREATE INDEX IF NOT EXISTS idx_cognitive_tests_owner_time ON cognitive_tests(owner_user_id, created_at DESC)');
->>>>>>> Stashed changes
   }
 
   static Future<void> _upgradeSchema(
@@ -375,8 +364,6 @@ class LocalDatabase {
       await db.execute(
           'CREATE INDEX IF NOT EXISTS idx_relation_conflicts_owner ON relation_conflicts(owner_user_id, status)');
     }
-<<<<<<< Updated upstream
-=======
     if (oldVersion < 5) {
       Future<void> tryAddUserColumn(String sql) async {
         try {
@@ -414,7 +401,6 @@ class LocalDatabase {
       await db.execute(
           'CREATE INDEX IF NOT EXISTS idx_cognitive_tests_owner_time ON cognitive_tests(owner_user_id, created_at DESC)');
     }
->>>>>>> Stashed changes
     if (newVersion > _dbVersion) {
       return;
     }
@@ -849,8 +835,6 @@ class LocalDatabase {
     return null;
   }
 
-<<<<<<< Updated upstream
-=======
   // --- 表2：家庭成员 family_members ---
 
   static Future<int> insertFamilyMember(Map<String, dynamic> row) async {
@@ -1189,7 +1173,6 @@ class LocalDatabase {
     return streak;
   }
 
->>>>>>> Stashed changes
   /// 每位使用者对应一个主会话；默认老人账号沿用历史 id `local_conversation_home`。
   static Future<String> ensureHomeConversationForUser(String userId) async {
     final db = await instance();

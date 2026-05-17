@@ -155,7 +155,7 @@ aigc_five_men_team/
 │   ├── config/                   # 常量、主题
 │   ├── core/
 │   │   ├── api_client.dart       # Dio → 本地代理
-│   │   ├── services/             # voice_input_service（系统语音识别）
+│   │   ├── voice_input/          # 语音输入（vivo ASR + 系统听写回退）
 │   │   └── utils/                # 工具占位（权限、日期等）
 │   ├── data/
 │   │   ├── local_db/             # SQLite（应用主库 bluecare.db）

@@ -7,8 +7,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 import '../../config/constants.dart';
-import '../../data/repositories/asr_repository.dart';
-import 'voice_input_service.dart';
+import 'asr_repository.dart';
+import 'voice_input_exceptions.dart';
 
 /// 一期 vivo ASR：录完再上传本地代理识别（与 [VoiceInputService] 点击开始/结束交互一致）。
 class VivoAsrInputService {
@@ -127,7 +127,9 @@ class VivoAsrInputService {
           ? DateTime.now().difference(started)
           : Duration.zero;
 
-      debugPrint('[VivoASR] upload ${file.path} duration=${duration.inSeconds}s');
+      debugPrint(
+        '[VivoASR] upload ${file.path} duration=${duration.inSeconds}s',
+      );
       final text = await _asrRepository.transcribeWavFile(
         file,
         recordingDuration: duration,

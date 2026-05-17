@@ -10,7 +10,7 @@ import '../data/models/memory_extraction_payload.dart';
 import '../data/models/relation_conflict_record.dart';
 import '../data/local_db/local_database.dart';
 import '../data/repositories/chat_repository.dart';
-import '../core/services/voice_input_service.dart';
+import '../core/voice_input/voice_input.dart';
 import 'relation_extractor.dart';
 
 class ChatProvider extends ChangeNotifier {

@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../config/theme.dart';
-import '../../core/services/voice_input_service.dart';
+import '../../core/voice_input/voice_input.dart';
 import '../../data/models/chat_message.dart';
 import '../../data/models/nearby_person.dart';
 import '../../data/models/relation_conflict_record.dart';

@@ -6,12 +6,12 @@ import 'package:provider/provider.dart';
 import '../../config/theme.dart';
 import '../../core/services/voice_input_service.dart';
 import '../../data/models/chat_message.dart';
-import '../../data/models/nearby_person.dart';
 import '../../data/models/relation_conflict_record.dart';
 import '../../data/local_db/local_database.dart';
 import '../../logic/chat_provider.dart';
+import 'data_preentry_screen.dart';
 
-enum _AppView { home, memory, recent, nearby, settings }
+enum _AppView { home, memory, recent, preEntry, settings }
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -206,53 +206,18 @@ class _HomeScreenState extends State<HomeScreen> {
           key: ValueKey('settings-${chat.activeUserId}'),
           speechMode: _speechMode,
           networkOnline: _networkOnline,
-          activeUserId: chat.activeUserId,
           onBack: () => _showView(_AppView.home),
-          onNearbyTap: () => _showView(_AppView.nearby),
+          onPreEntryTap: () => _showView(_AppView.preEntry),
           onModeSelected: (value) => setState(() => _speechMode = value),
           onNetworkTap: () => setState(() => _networkOnline = !_networkOnline),
-          onAddLocalProfile: _promptAddLocalProfile,
         );
-      case _AppView.nearby:
-        return _NearbyPeopleView(
-          key: ValueKey('nearby-${chat.activeUserId}'),
+      case _AppView.preEntry:
+        return DataPreentryScreen(
+          key: ValueKey('pre-entry-${chat.activeUserId}'),
           ownerUserId: chat.activeUserId,
           onBack: () => _showView(_AppView.settings),
         );
     }
-  }
-
-  Future<void> _promptAddLocalProfile() async {
-    final controller = TextEditingController();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('添加使用者'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: '称呼或姓名',
-            hintText: '例如：李伯伯',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('创建'),
-          ),
-        ],
-      ),
-    );
-    final name = controller.text.trim();
-    controller.dispose();
-    if (ok != true || name.isEmpty || !mounted) return;
-    await context.read<ChatProvider>().createLocalProfile(name);
-    if (mounted) setState(() {});
   }
 
   BoxDecoration _phoneDecoration(bool compact) {
@@ -800,7 +765,8 @@ class _RecentNotesViewState extends State<_RecentNotesView> {
                     onPressed: _confirmClearAll,
                     icon: const Icon(Icons.delete_sweep_outlined),
                     label: const Text('清空全部'),
-                    style: TextButton.styleFrom(foregroundColor: AppTheme.textSoft),
+                    style: TextButton.styleFrom(
+                        foregroundColor: AppTheme.textSoft),
                   ),
                   TextButton.icon(
                     onPressed: _refresh,
@@ -902,241 +868,8 @@ class _ChatHistoryItem extends StatelessWidget {
       trailing: IconButton(
         tooltip: '删除',
         onPressed: () => _confirmDelete(context),
-        icon: const Icon(Icons.delete_outline_rounded, color: AppTheme.textSoft),
-      ),
-    );
-  }
-}
-
-class _NearbyPeopleView extends StatefulWidget {
-  const _NearbyPeopleView({
-    super.key,
-    required this.ownerUserId,
-    required this.onBack,
-  });
-
-  final String ownerUserId;
-  final VoidCallback onBack;
-
-  @override
-  State<_NearbyPeopleView> createState() => _NearbyPeopleViewState();
-}
-
-class _NearbyPeopleViewState extends State<_NearbyPeopleView> {
-  late Future<List<NearbyPersonModel>> _future;
-
-  @override
-  void initState() {
-    super.initState();
-    _future = _loadNearbyPeople();
-  }
-
-  @override
-  void didUpdateWidget(_NearbyPeopleView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.ownerUserId != widget.ownerUserId) {
-      _refresh();
-    }
-  }
-
-  Future<List<NearbyPersonModel>> _loadNearbyPeople() async {
-    final rows =
-        await LocalDatabase.getNearbyPeopleForUser(widget.ownerUserId);
-    return rows.map(NearbyPersonModel.fromMap).toList();
-  }
-
-  Future<void> _refresh() async {
-    setState(() {
-      _future = _loadNearbyPeople();
-    });
-  }
-
-  Future<void> _addNearbyPerson() async {
-    final nameController = TextEditingController();
-    final relationController = TextEditingController();
-    final phoneController = TextEditingController();
-    bool isEmergency = false;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: const Text('添加周围人'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameController,
-                  decoration: const InputDecoration(labelText: '姓名'),
-                ),
-                TextField(
-                  controller: relationController,
-                  decoration: const InputDecoration(labelText: '关系'),
-                ),
-                TextField(
-                  controller: phoneController,
-                  decoration: const InputDecoration(labelText: '联系电话'),
-                ),
-                SwitchListTile(
-                  value: isEmergency,
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('紧急联系人'),
-                  onChanged: (value) => setState(() => isEmergency = value),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('保存'),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    if (confirmed != true || nameController.text.trim().isEmpty) return;
-    await LocalDatabase.upsertNearbyPerson({
-      'id': 'nearby_${DateTime.now().microsecondsSinceEpoch}',
-      'owner_user_id': widget.ownerUserId,
-      'name': nameController.text.trim(),
-      'relation': relationController.text.trim(),
-      'phone': phoneController.text.trim(),
-      'is_emergency_contact': isEmergency ? 1 : 0,
-    });
-    if (!mounted) return;
-    await _refresh();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.only(bottom: 14),
-      children: [
-        _BackLine(title: '周围人信息', onBack: widget.onBack),
-        const SizedBox(height: 14),
-        _WarmCard(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const _SectionTitle(
-                icon: Icons.people_alt_rounded,
-                title: '附近与亲友联系人',
-                subtitle: '本地保存，离线也可查看',
-              ),
-              const SizedBox(height: 14),
-              Align(
-                alignment: Alignment.centerRight,
-                child: FilledButton.icon(
-                  onPressed: _addNearbyPerson,
-                  icon: const Icon(Icons.add),
-                  label: const Text('添加'),
-                ),
-              ),
-              const SizedBox(height: 12),
-              FutureBuilder<List<NearbyPersonModel>>(
-                future: _future,
-                builder: (context, snapshot) {
-                  if (!snapshot.hasData) {
-                    return const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 20),
-                      child: Center(child: CircularProgressIndicator()),
-                    );
-                  }
-                  final people = snapshot.data!;
-                  if (people.isEmpty) {
-                    return const Text(
-                      '还没有周围人记录，点击上方“添加”即可开始。',
-                      style: TextStyle(fontSize: 16, color: AppTheme.textSoft),
-                    );
-                  }
-                  return Column(
-                    children: people
-                        .map(
-                          (person) => _NearbyPersonTile(
-                            person: person,
-                            onDelete: () async {
-                              await LocalDatabase.removeNearbyPerson(person.id);
-                              if (!mounted) return;
-                              await _refresh();
-                            },
-                          ),
-                        )
-                        .toList(),
-                  );
-                },
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _NearbyPersonTile extends StatelessWidget {
-  const _NearbyPersonTile({required this.person, required this.onDelete});
-
-  final NearbyPersonModel person;
-  final VoidCallback onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppTheme.border),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '${person.name ?? '未命名'}${person.relation == null || person.relation!.isEmpty ? '' : ' · ${person.relation}'}',
-                  style: const TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w900,
-                    color: AppTheme.text,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  person.phone == null || person.phone!.isEmpty
-                      ? '未填写联系方式'
-                      : person.phone!,
-                  style:
-                      const TextStyle(fontSize: 15, color: AppTheme.textSoft),
-                ),
-                if (person.isEmergencyContact)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 4),
-                    child: Text(
-                      '紧急联系人',
-                      style: TextStyle(
-                        color: AppTheme.primaryDeep,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          IconButton(
-            onPressed: onDelete,
-            icon: const Icon(Icons.delete_outline_rounded),
-          ),
-        ],
+        icon:
+            const Icon(Icons.delete_outline_rounded, color: AppTheme.textSoft),
       ),
     );
   }
@@ -1147,22 +880,18 @@ class _SettingsView extends StatelessWidget {
     super.key,
     required this.speechMode,
     required this.networkOnline,
-    required this.activeUserId,
     required this.onBack,
-    required this.onNearbyTap,
+    required this.onPreEntryTap,
     required this.onModeSelected,
     required this.onNetworkTap,
-    required this.onAddLocalProfile,
   });
 
   final String speechMode;
   final bool networkOnline;
-  final String activeUserId;
   final VoidCallback onBack;
-  final VoidCallback onNearbyTap;
+  final VoidCallback onPreEntryTap;
   final ValueChanged<String> onModeSelected;
   final VoidCallback onNetworkTap;
-  final VoidCallback onAddLocalProfile;
 
   @override
   Widget build(BuildContext context) {
@@ -1177,34 +906,15 @@ class _SettingsView extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const _SectionTitle(
-                icon: Icons.person_rounded,
-                title: '使用者与数据划分',
-                subtitle: '聊天记录、人物关系与周围人均按当前使用者分开保存',
+                icon: Icons.assignment_rounded,
+                title: '数据预录入',
+                subtitle: '老人信息、亲属、重要经历与照片统一管理',
               ),
               const SizedBox(height: 12),
-              _SettingsUserSwitcher(
-                activeUserId: activeUserId,
-                onAddProfile: onAddLocalProfile,
+              _SettingsRow(
+                title: '进入预录入',
+                onTap: onPreEntryTap,
               ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 14),
-        _WarmCard(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const _SectionTitle(
-                icon: Icons.shield_rounded,
-                title: '本地守护',
-                subtitle: '提前录入，后续聊天可继续补充',
-              ),
-              const SizedBox(height: 16),
-              const _SettingsRow(title: '基本信息'),
-              const _SettingsRow(title: '家庭照片'),
-              const _SettingsRow(title: '重要经历'),
-              _SettingsRow(title: '周围人信息', onTap: onNearbyTap),
             ],
           ),
         ),
@@ -1304,7 +1014,8 @@ class _RelationConflictBanner extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.warning_amber_rounded, color: AppTheme.primaryDeep),
+              const Icon(Icons.warning_amber_rounded,
+                  color: AppTheme.primaryDeep),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -1326,7 +1037,8 @@ class _RelationConflictBanner extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             '原有：${conflict.oldValue ?? '（空）'}\n新提到：${conflict.newValue ?? '（空）'}',
-            style: const TextStyle(fontSize: 15, height: 1.45, color: AppTheme.text),
+            style: const TextStyle(
+                fontSize: 15, height: 1.45, color: AppTheme.text),
           ),
           const SizedBox(height: 12),
           Row(
@@ -1352,68 +1064,6 @@ class _RelationConflictBanner extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _SettingsUserSwitcher extends StatelessWidget {
-  const _SettingsUserSwitcher({
-    required this.activeUserId,
-    required this.onAddProfile,
-  });
-
-  final String activeUserId;
-  final VoidCallback onAddProfile;
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<List<Map<String, dynamic>>>(
-      future: LocalDatabase.listUsers(),
-      builder: (context, snapshot) {
-        final users = snapshot.data ?? [];
-        if (users.isEmpty) {
-          return const Text(
-            '暂无使用者记录',
-            style: TextStyle(fontSize: 16, color: AppTheme.textSoft),
-          );
-        }
-        final ids = users.map((u) => u['id'] as String).toSet();
-        final value =
-            ids.contains(activeUserId) ? activeUserId : users.first['id'] as String;
-
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            DropdownButtonFormField<String>(
-              value: value,
-              decoration: const InputDecoration(
-                labelText: '当前使用者',
-                filled: true,
-                fillColor: Colors.white,
-              ),
-              items: users.map((u) {
-                final id = u['id'] as String;
-                final name = (u['name'] as String?)?.trim();
-                return DropdownMenuItem<String>(
-                  value: id,
-                  child: Text(name == null || name.isEmpty ? id : name),
-                );
-              }).toList(),
-              onChanged: (v) {
-                if (v != null) {
-                  context.read<ChatProvider>().setActiveUserId(v);
-                }
-              },
-            ),
-            const SizedBox(height: 10),
-            TextButton.icon(
-              onPressed: onAddProfile,
-              icon: const Icon(Icons.person_add_alt_rounded),
-              label: const Text('添加另一位使用者'),
-            ),
-          ],
-        );
-      },
     );
   }
 }
@@ -1654,7 +1304,7 @@ class _StatusPill extends StatelessWidget {
         border: Border.all(color: const Color(0xFFD4EEE9)),
       ),
       child: const Text(
-        '离线陪伴 · 本地守护',
+        '离线陪伴 · 数据守护',
         style: TextStyle(
           fontSize: 16,
           fontWeight: FontWeight.w800,
@@ -2038,14 +1688,8 @@ class _SettingsRow extends StatelessWidget {
                 ),
               ),
             ),
-            const Text(
-              '进入',
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w800,
-                color: AppTheme.primaryDeep,
-              ),
-            ),
+            const Icon(Icons.arrow_forward_rounded,
+                color: AppTheme.primaryDeep),
           ],
         ),
       ),

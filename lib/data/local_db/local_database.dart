@@ -1,4 +1,4 @@
-﻿import 'dart:convert';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -7,6 +7,9 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
 import 'package:uuid/uuid.dart';
 
+import '../models/profile_photo.dart';
+import '../repositories/pre_entry_mapper.dart';
+
 class LocalDatabase {
   LocalDatabase._();
 
@@ -14,7 +17,7 @@ class LocalDatabase {
   static bool _dbFactoryReady = false;
 
   static const _dbName = 'bluecare.db';
-  static const _dbVersion = 5;
+  static const _dbVersion = 6;
 
   static const legacyDefaultUserId = 'local_user_default';
   static const legacyDefaultConversationId = 'local_conversation_home';
@@ -40,6 +43,7 @@ class LocalDatabase {
       },
       onOpen: (db) async {
         await _repairSchemaIfIncomplete(db);
+        await _ensurePreEntrySchema(db);
       },
     );
 
@@ -58,6 +62,7 @@ class LocalDatabase {
     'attachments',
     'nearby_people',
     'relation_conflicts',
+    'profile_photos',
   ];
 
   /// 在每次打开库后执行：若任一张核心表缺失，则补跑幂等 DDL（不依赖 onCreate/onUpgrade 是否被触发）。
@@ -122,7 +127,11 @@ class LocalDatabase {
         food_preference TEXT,
         personality TEXT,
         taboo TEXT,
-        dialect TEXT
+        dialect TEXT,
+        gender TEXT,
+        current_address TEXT,
+        care_notes TEXT,
+        medical_notes TEXT
       )
     ''');
 
@@ -184,15 +193,22 @@ class LocalDatabase {
         owner_user_id TEXT NOT NULL,
         name TEXT,
         relation TEXT,
+        photo_path TEXT,
         phone TEXT,
+        birthday TEXT,
+        location TEXT,
         address TEXT,
+        contact_freq TEXT,
         note TEXT,
         is_emergency_contact INTEGER DEFAULT 0,
         distance_meters REAL,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        family_member_id INTEGER,
         metadata TEXT,
         created_at TEXT,
         updated_at TEXT,
-        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(family_member_id) REFERENCES family_members(id) ON DELETE SET NULL
       )
     ''');
 
@@ -206,6 +222,8 @@ class LocalDatabase {
         'CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id)');
     await db.execute(
         'CREATE INDEX IF NOT EXISTS idx_nearby_people_owner ON nearby_people(owner_user_id)');
+
+    await _createProfilePhotoTables(db);
 
     await db.execute('''
       CREATE TABLE IF NOT EXISTS relation_conflicts(
@@ -300,6 +318,60 @@ class LocalDatabase {
         'CREATE INDEX IF NOT EXISTS idx_daily_life_owner_date ON daily_life_records(owner_user_id, date DESC)');
   }
 
+  static Future<void> _ensurePreEntrySchema(Database db) async {
+    await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN gender TEXT');
+    await _tryAddColumn(
+        db, 'ALTER TABLE users ADD COLUMN current_address TEXT');
+    await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN care_notes TEXT');
+    await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN medical_notes TEXT');
+    await _tryAddColumn(
+        db, 'ALTER TABLE nearby_people ADD COLUMN photo_path TEXT');
+    await _tryAddColumn(
+        db, 'ALTER TABLE nearby_people ADD COLUMN birthday TEXT');
+    await _tryAddColumn(
+        db, 'ALTER TABLE nearby_people ADD COLUMN location TEXT');
+    await _tryAddColumn(
+        db, 'ALTER TABLE nearby_people ADD COLUMN contact_freq TEXT');
+    await _tryAddColumn(db,
+        'ALTER TABLE nearby_people ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1');
+    await _tryAddColumn(
+        db, 'ALTER TABLE nearby_people ADD COLUMN family_member_id INTEGER');
+    await _createProfilePhotoTables(db);
+  }
+
+  static Future<void> _createProfilePhotoTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS profile_photos(
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        storage_type TEXT NOT NULL DEFAULT 'file_path',
+        category TEXT,
+        caption TEXT,
+        photo_time TEXT,
+        location TEXT,
+        people_involved TEXT,
+        family_member_id INTEGER,
+        memory_event_id INTEGER,
+        is_favorite INTEGER NOT NULL DEFAULT 0,
+        metadata TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(family_member_id) REFERENCES family_members(id) ON DELETE SET NULL,
+        FOREIGN KEY(memory_event_id) REFERENCES memory_events(id) ON DELETE SET NULL
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_profile_photos_owner ON profile_photos(owner_user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_profile_photos_category ON profile_photos(owner_user_id, category)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_profile_photos_family_member ON profile_photos(family_member_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_profile_photos_memory_event ON profile_photos(memory_event_id)');
+  }
+
   static Future<void> _upgradeSchema(
       Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
@@ -333,7 +405,8 @@ class LocalDatabase {
     }
     if (oldVersion < 4) {
       try {
-        await db.execute('ALTER TABLE conversations ADD COLUMN owner_user_id TEXT');
+        await db
+            .execute('ALTER TABLE conversations ADD COLUMN owner_user_id TEXT');
       } catch (_) {
         // Column may already exist on partial installs.
       }
@@ -362,26 +435,53 @@ class LocalDatabase {
           'CREATE INDEX IF NOT EXISTS idx_relation_conflicts_owner ON relation_conflicts(owner_user_id, status)');
     }
     if (oldVersion < 5) {
-      Future<void> tryAddUserColumn(String sql) async {
-        try {
-          await db.execute(sql);
-        } catch (_) {}
-      }
-
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN updated_at TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN birth_year TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN hometown TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN career TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN hobbies TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN food_preference TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN personality TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN taboo TEXT');
-      await tryAddUserColumn('ALTER TABLE users ADD COLUMN dialect TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN updated_at TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN birth_year TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN hometown TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN career TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN hobbies TEXT');
+      await _tryAddColumn(
+          db, 'ALTER TABLE users ADD COLUMN food_preference TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN personality TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN taboo TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN dialect TEXT');
 
       await _createFamilyMemoryDailyTables(db);
     }
+    if (oldVersion < 6) {
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN gender TEXT');
+      await _tryAddColumn(
+          db, 'ALTER TABLE users ADD COLUMN current_address TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN care_notes TEXT');
+      await _tryAddColumn(
+          db, 'ALTER TABLE users ADD COLUMN medical_notes TEXT');
+
+      await _tryAddColumn(
+          db, 'ALTER TABLE nearby_people ADD COLUMN photo_path TEXT');
+      await _tryAddColumn(
+          db, 'ALTER TABLE nearby_people ADD COLUMN birthday TEXT');
+      await _tryAddColumn(
+          db, 'ALTER TABLE nearby_people ADD COLUMN location TEXT');
+      await _tryAddColumn(
+          db, 'ALTER TABLE nearby_people ADD COLUMN contact_freq TEXT');
+      await _tryAddColumn(db,
+          'ALTER TABLE nearby_people ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1');
+      await _tryAddColumn(
+          db, 'ALTER TABLE nearby_people ADD COLUMN family_member_id INTEGER');
+
+      await _createFamilyMemoryDailyTables(db);
+      await _createProfilePhotoTables(db);
+    }
     if (newVersion > _dbVersion) {
       return;
+    }
+  }
+
+  static Future<void> _tryAddColumn(Database db, String sql) async {
+    try {
+      await db.execute(sql);
+    } catch (_) {
+      // Column may already exist on partial installs.
     }
   }
 
@@ -401,7 +501,11 @@ class LocalDatabase {
         food_preference TEXT,
         personality TEXT,
         taboo TEXT,
-        dialect TEXT
+        dialect TEXT,
+        gender TEXT,
+        current_address TEXT,
+        care_notes TEXT,
+        medical_notes TEXT
       )
     ''');
     await db.execute('''
@@ -521,8 +625,7 @@ class LocalDatabase {
 
   static Future<void> insertUser(Map<String, dynamic> user) async {
     final db = await instance();
-    await db.insert('users', user,
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.insert('users', user, conflictAlgorithm: ConflictAlgorithm.ignore);
   }
 
   /// 按用户 id 局部更新老人基本信息表字段（不包含 id）；未出现在 [values] 中的列保持不变。
@@ -543,7 +646,8 @@ class LocalDatabase {
   }
 
   /// [nearby_people] / [relation_conflicts] 引用 users(id)，若缺少对应行，插入会因外键失败。
-  static Future<void> ensureUserExists(String userId, {String? displayName}) async {
+  static Future<void> ensureUserExists(String userId,
+      {String? displayName}) async {
     final db = await instance();
     final name = (displayName ?? '使用者').trim();
     await db.insert(
@@ -566,7 +670,8 @@ class LocalDatabase {
   }) async {
     await ensureUserExists(userId);
     final db = await instance();
-    final rows = await db.query('users', where: 'id = ?', whereArgs: [userId], limit: 1);
+    final rows =
+        await db.query('users', where: 'id = ?', whereArgs: [userId], limit: 1);
     var meta = <String, dynamic>{};
     if (rows.isNotEmpty) {
       final raw = rows.first['metadata'] as String?;
@@ -698,6 +803,73 @@ class LocalDatabase {
     return await db.delete('nearby_people', where: 'id = ?', whereArgs: [id]);
   }
 
+  static Future<int?> confirmNearbyPersonAsFamilyMember(String nearbyId) async {
+    final db = await instance();
+    final rows = await db.query(
+      'nearby_people',
+      where: 'id = ?',
+      whereArgs: [nearbyId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+
+    final nearby = rows.first;
+    final ownerUserId = (nearby['owner_user_id'] as String?)?.trim();
+    final name = (nearby['name'] as String?)?.trim() ?? '';
+    final relation = (nearby['relation'] as String?)?.trim() ?? '';
+    if (ownerUserId == null || ownerUserId.isEmpty || name.isEmpty) {
+      throw ArgumentError('周围人记录缺少 owner_user_id 或姓名，无法确认入亲属表');
+    }
+
+    final patch = PreEntryMapper.buildFamilyMemberPatchFromNearby(nearby);
+    final existing =
+        await findFamilyMemberByOwnerNameRelation(ownerUserId, name, relation);
+    final int familyMemberId;
+    if (existing != null) {
+      familyMemberId = (existing['id'] as num).toInt();
+      final updatePatch = Map<String, dynamic>.from(patch)
+        ..remove('owner_user_id')
+        ..removeWhere((_, value) => value == null);
+      await updateFamilyMember(familyMemberId, updatePatch);
+    } else {
+      familyMemberId = await insertFamilyMember(patch);
+    }
+
+    final metadata = _mergeMetadata(nearby['metadata'] as String?, {
+      'confirmed_as_family_member': true,
+      'family_member_id': familyMemberId,
+      'confirmed_at': DateTime.now().toIso8601String(),
+    });
+    await db.update(
+      'nearby_people',
+      {
+        'family_member_id': familyMemberId,
+        'metadata': json.encode(metadata),
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [nearbyId],
+    );
+    return familyMemberId;
+  }
+
+  static Map<String, dynamic> _mergeMetadata(
+    String? raw,
+    Map<String, dynamic> patch,
+  ) {
+    final result = <String, dynamic>{};
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = json.decode(raw);
+        if (decoded is Map<String, dynamic>) {
+          result.addAll(decoded);
+        }
+      } catch (_) {}
+    }
+    result.addAll(patch);
+    return result;
+  }
+
   /// 人物姓名用于匹配时的规范化（与抽取逻辑一致）。
   static String normalizePersonName(String? name) {
     if (name == null) return '';
@@ -711,7 +883,8 @@ class LocalDatabase {
   }
 
   /// 同一使用者名下，称谓规范化后相同的周围人条目（可能 0/1/多条）。
-  static Future<List<Map<String, dynamic>>> findNearbyPeopleByNormalizedRelation(
+  static Future<List<Map<String, dynamic>>>
+      findNearbyPeopleByNormalizedRelation(
     String ownerUserId,
     String normalizedRelation,
   ) async {
@@ -770,7 +943,8 @@ class LocalDatabase {
     }
 
     if (patch.length > 1) {
-      await db.update('nearby_people', patch, where: 'id = ?', whereArgs: [keepId]);
+      await db
+          .update('nearby_people', patch, where: 'id = ?', whereArgs: [keepId]);
     }
 
     await db.update(
@@ -782,6 +956,7 @@ class LocalDatabase {
     await db.delete('nearby_people', where: 'id = ?', whereArgs: [removeId]);
   }
 
+  // ignore: unused_element
   static Future<void> _dedupeNearbyPeopleSameNameAndRelation(
     Database db,
     String ownerUserId,
@@ -1007,6 +1182,61 @@ class LocalDatabase {
     return int.tryParse(id?.toString() ?? '');
   }
 
+  // --- 表4：照片档案 profile_photos ---
+
+  static Future<void> insertProfilePhoto(ProfilePhotoModel photo) async {
+    final db = await instance();
+    await ensureUserExists(photo.ownerUserId);
+    await db.insert(
+      'profile_photos',
+      photo.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  static Future<int> updateProfilePhoto(
+    String id,
+    Map<String, dynamic> values,
+  ) async {
+    final db = await instance();
+    final patch = Map<String, dynamic>.from(values);
+    patch.remove('id');
+    patch.remove('owner_user_id');
+    if (patch.isEmpty) return 0;
+    patch['updated_at'] = DateTime.now().toIso8601String();
+    return db.update('profile_photos', patch, where: 'id = ?', whereArgs: [id]);
+  }
+
+  static Future<int> deleteProfilePhoto(String id) async {
+    final db = await instance();
+    return db.delete('profile_photos', where: 'id = ?', whereArgs: [id]);
+  }
+
+  static Future<ProfilePhotoModel?> getProfilePhotoById(String id) async {
+    final db = await instance();
+    final rows =
+        await db.query('profile_photos', where: 'id = ?', whereArgs: [id]);
+    if (rows.isEmpty) return null;
+    return ProfilePhotoModel.fromMap(rows.first);
+  }
+
+  static Future<List<ProfilePhotoModel>> listProfilePhotosForUser(
+    String ownerUserId, {
+    ProfilePhotoCategory? category,
+  }) async {
+    final db = await instance();
+    final rows = await db.query(
+      'profile_photos',
+      where: category == null
+          ? 'owner_user_id = ?'
+          : 'owner_user_id = ? AND category = ?',
+      whereArgs:
+          category == null ? [ownerUserId] : [ownerUserId, category.value],
+      orderBy: 'is_favorite DESC, updated_at DESC',
+    );
+    return rows.map(ProfilePhotoModel.fromMap).toList();
+  }
+
   // --- 表5：每日生活记录 daily_life_records ---
 
   static Future<int> insertDailyLifeRecord(Map<String, dynamic> row) async {
@@ -1034,7 +1264,8 @@ class LocalDatabase {
     patch.remove('date');
     if (patch.isEmpty) return 0;
     patch['updated_at'] = DateTime.now().toIso8601String();
-    return db.update('daily_life_records', patch, where: 'id = ?', whereArgs: [id]);
+    return db
+        .update('daily_life_records', patch, where: 'id = ?', whereArgs: [id]);
   }
 
   static Future<int> deleteDailyLifeRecord(int id) async {
@@ -1082,7 +1313,8 @@ class LocalDatabase {
   }
 
   /// 同一使用者同一天仅一条：存在则更新当日字段。
-  static Future<int> upsertDailyLifeRecordByDate(Map<String, dynamic> row) async {
+  static Future<int> upsertDailyLifeRecordByDate(
+      Map<String, dynamic> row) async {
     final ownerUserId = row['owner_user_id'] as String?;
     final date = row['date'] as String?;
     if (ownerUserId == null ||
@@ -1168,8 +1400,7 @@ class LocalDatabase {
     final db = await instance();
     return db.delete(
       'relation_conflicts',
-      where:
-          'owner_user_id = ? AND nearby_person_id = ? AND status = ?',
+      where: 'owner_user_id = ? AND nearby_person_id = ? AND status = ?',
       whereArgs: [ownerUserId, nearbyPersonId, 'pending'],
     );
   }
@@ -1252,7 +1483,8 @@ class LocalDatabase {
       }
     }
 
-    await db.delete('relation_conflicts', where: 'id = ?', whereArgs: [conflictId]);
+    await db
+        .delete('relation_conflicts', where: 'id = ?', whereArgs: [conflictId]);
   }
 
   /// 合并写入备注（无冲突时追加）。
@@ -1303,7 +1535,8 @@ class LocalDatabase {
   }
 
   /// 清空某会话下的全部消息。
-  static Future<int> deleteAllMessagesInConversation(String conversationId) async {
+  static Future<int> deleteAllMessagesInConversation(
+      String conversationId) async {
     final db = await instance();
     final n = await db.delete(
       'messages',
@@ -1329,8 +1562,7 @@ class LocalDatabase {
       orderBy: 'timestamp DESC',
       limit: 1,
     );
-    final lastId =
-        latest.isEmpty ? null : latest.first['id'] as String?;
+    final lastId = latest.isEmpty ? null : latest.first['id'] as String?;
     await db.update(
       'conversations',
       {'last_message_id': lastId},

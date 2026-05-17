@@ -255,14 +255,18 @@ class ChatProvider extends ChangeNotifier {
       }
       if (user != null) {
         const profilePairs = <String, String>{
+          'gender': '性别',
           'birth_year': '出生年月',
           'hometown': '籍贯',
+          'current_address': '现居地',
           'career': '职业经历',
           'hobbies': '兴趣爱好',
           'food_preference': '饮食习惯',
           'personality': '性格',
           'taboo': '忌讳话题',
           'dialect': '方言',
+          'care_notes': '照护提醒',
+          'medical_notes': '健康注意事项',
         };
         for (final e in profilePairs.entries) {
           final v = (user[e.key] as String?)?.trim();
@@ -508,8 +512,7 @@ class ChatProvider extends ChangeNotifier {
 
       var hints = payload.people;
       if (hints.isEmpty) {
-        final fullText =
-            transcript.map((e) => e['content'] ?? '').join('\n');
+        final fullText = transcript.map((e) => e['content'] ?? '').join('\n');
         hints = RelationExtractor.extract(fullText);
         ruleHintCount = hints.length;
       }
@@ -602,14 +605,18 @@ class ChatProvider extends ChangeNotifier {
       }
 
       add('称呼', 'name');
+      add('性别', 'gender');
       add('出生年月', 'birth_year');
       add('籍贯', 'hometown');
+      add('现居地', 'current_address');
       add('职业经历', 'career');
       add('兴趣爱好', 'hobbies');
       add('饮食习惯', 'food_preference');
       add('性格', 'personality');
       add('忌讳', 'taboo');
       add('方言', 'dialect');
+      add('照护提醒', 'care_notes');
+      add('健康注意事项', 'medical_notes');
       return parts.isEmpty ? '（尚无老人档案）' : parts.join('；');
     } catch (_) {
       return '（读取老人档案失败）';
@@ -896,7 +903,8 @@ class ChatProvider extends ChangeNotifier {
 
     if (h.note != null && h.note!.trim().isNotEmpty) {
       final n = h.note!.trim();
-      if (!_meaningfullyDifferent(oldNote, n) && (oldNote ?? '').trim().isEmpty) {
+      if (!_meaningfullyDifferent(oldNote, n) &&
+          (oldNote ?? '').trim().isEmpty) {
         final cur = await freshNearbyRow();
         if (cur != null) {
           await LocalDatabase.upsertNearbyPerson({

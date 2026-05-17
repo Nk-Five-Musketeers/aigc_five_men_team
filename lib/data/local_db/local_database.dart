@@ -63,6 +63,7 @@ class LocalDatabase {
     'nearby_people',
     'relation_conflicts',
     'profile_photos',
+    'cognitive_tests',
   ];
 
   /// 在每次打开库后执行：若任一张核心表缺失，则补跑幂等 DDL（不依赖 onCreate/onUpgrade 是否被触发）。
@@ -224,6 +225,7 @@ class LocalDatabase {
         'CREATE INDEX IF NOT EXISTS idx_nearby_people_owner ON nearby_people(owner_user_id)');
 
     await _createProfilePhotoTables(db);
+    await _createCognitiveTestTables(db);
 
     await db.execute('''
       CREATE TABLE IF NOT EXISTS relation_conflicts(
@@ -372,6 +374,25 @@ class LocalDatabase {
         'CREATE INDEX IF NOT EXISTS idx_profile_photos_memory_event ON profile_photos(memory_event_id)');
   }
 
+  static Future<void> _createCognitiveTestTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS cognitive_tests(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_user_id TEXT NOT NULL,
+        test_type TEXT NOT NULL,
+        image_path TEXT,
+        prompt_text TEXT,
+        user_answer TEXT,
+        is_valid INTEGER NOT NULL DEFAULT 0,
+        score_note TEXT,
+        created_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_cognitive_tests_owner_time ON cognitive_tests(owner_user_id, created_at DESC)');
+  }
+
   static Future<void> _upgradeSchema(
       Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
@@ -471,6 +492,7 @@ class LocalDatabase {
 
       await _createFamilyMemoryDailyTables(db);
       await _createProfilePhotoTables(db);
+      await _createCognitiveTestTables(db);
     }
     if (newVersion > _dbVersion) {
       return;
@@ -1337,6 +1359,72 @@ class LocalDatabase {
     return insertDailyLifeRecord(Map<String, dynamic>.from(row));
   }
 
+  // --- cognitive_tests 认知干预记录（供 CAI prompt 频控） ---
+
+  static Future<int> insertCognitiveTest(Map<String, dynamic> row) async {
+    final db = await instance();
+    final payload = Map<String, dynamic>.from(row);
+    payload.remove('id');
+    final oid = payload['owner_user_id'] as String?;
+    if (oid != null) {
+      await ensureUserExists(oid);
+    }
+    payload['created_at'] = payload['created_at'] ?? DateTime.now().toIso8601String();
+    payload['is_valid'] = (payload['is_valid'] as int?) ?? 0;
+    return db.insert('cognitive_tests', payload);
+  }
+
+  /// 统计今日认知测试总尝试次数（含有效与无效）。
+  static Future<int> countCognitiveTestsToday(String ownerUserId) async {
+    final db = await instance();
+    final today = DateTime.now().toIso8601String().split('T').first;
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) AS cnt FROM cognitive_tests WHERE owner_user_id = ? AND created_at >= ?',
+      [ownerUserId, today],
+    );
+    if (rows.isEmpty) return 0;
+    return (rows.first['cnt'] as num?)?.toInt() ?? 0;
+  }
+
+  /// 获取最近一次认知测试时间。
+  static Future<DateTime?> getLastCognitiveTestTime(String ownerUserId) async {
+    final db = await instance();
+    final rows = await db.query(
+      'cognitive_tests',
+      columns: ['created_at'],
+      where: 'owner_user_id = ?',
+      whereArgs: [ownerUserId],
+      orderBy: 'created_at DESC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    final ts = rows.first['created_at'] as String?;
+    if (ts == null || ts.isEmpty) return null;
+    return DateTime.tryParse(ts);
+  }
+
+  /// 从最近一条往回数连续无效作答的条数（用于频控：连续 2 次无效当天停）。
+  static Future<int> getRecentInvalidStreak(String ownerUserId, {int limit = 2}) async {
+    final db = await instance();
+    final rows = await db.query(
+      'cognitive_tests',
+      columns: ['is_valid'],
+      where: 'owner_user_id = ?',
+      whereArgs: [ownerUserId],
+      orderBy: 'created_at DESC',
+      limit: limit,
+    );
+    int streak = 0;
+    for (final r in rows) {
+      if ((r['is_valid'] as int?) == 0) {
+        streak++;
+      } else {
+        break;
+      }
+    }
+    return streak;
+  }
+
   /// 每位使用者对应一个主会话；默认老人账号沿用历史 id `local_conversation_home`。
   static Future<String> ensureHomeConversationForUser(String userId) async {
     final db = await instance();
@@ -1550,6 +1638,17 @@ class LocalDatabase {
       whereArgs: [conversationId],
     );
     return n;
+  }
+
+  /// 统计当日某用户在 messages 表中的发言条数（用于判断"今日首次发言"）。
+  static Future<int> countMessagesTodayByUser(String userId, String todayDate) async {
+    final db = await instance();
+    final rows = await db.rawQuery(
+      "SELECT COUNT(*) AS cnt FROM messages WHERE user_id = ? AND timestamp >= ?",
+      [userId, todayDate],
+    );
+    if (rows.isEmpty) return 0;
+    return (rows.first['cnt'] as num?)?.toInt() ?? 0;
   }
 
   static Future<void> _refreshConversationLastMessageId(

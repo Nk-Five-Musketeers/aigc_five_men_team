@@ -1,4 +1,4 @@
-﻿import '../models/story_item.dart';
+import '../../models/_scaffold/story_item.dart';
 
 class MemoryRepository {
   Future<List<StoryItem>> fetchStories() async {

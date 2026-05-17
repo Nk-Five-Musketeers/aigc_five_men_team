@@ -1,6 +1,6 @@
 ﻿import 'package:flutter/foundation.dart';
 
-import '../data/models/story_item.dart';
+import '../../data/models/_scaffold/story_item.dart';
 
 class MemoryProvider extends ChangeNotifier {
   final List<StoryItem> _stories = <StoryItem>[];

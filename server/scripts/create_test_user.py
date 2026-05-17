@@ -4,10 +4,15 @@ import sqlite3
 import importlib.util
 
 here = os.path.dirname(os.path.abspath(__file__))
-db_file = os.path.join(here, 'test_elderly_care.db')
+server_dir = os.path.join(here, '..')
+fixtures_db_dir = os.path.join(server_dir, 'fixtures', 'databases')
+os.makedirs(fixtures_db_dir, exist_ok=True)
+db_file = os.path.join(fixtures_db_dir, 'test_elderly_care.db')
 
-# 动态加载同目录的 database.py，避免包导入问题
-spec = importlib.util.spec_from_file_location('server_database', os.path.join(here, 'database.py'))
+# 动态加载 server/database.py，避免包导入问题
+spec = importlib.util.spec_from_file_location(
+    'server_database', os.path.join(server_dir, 'database.py')
+)
 server_db = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server_db)
 DatabaseManager = getattr(server_db, 'DatabaseManager')

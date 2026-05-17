@@ -2,8 +2,8 @@
 """统一的填表/导入脚本：整合原有测试脚本与 auto_importer 的功能。
 
 用法示例：
-  python server/populate_tables.py --run auto_import --input server/sample_input.txt --user-id u_unified --db server/elderly_care_unified.db
-  python server/populate_tables.py --run test_user --db server/test.db
+  python server/scripts/populate_tables.py --run auto_import --input server/fixtures/sample_input.txt --user-id u_unified --db server/fixtures/databases/elderly_care_unified.db
+  python server/scripts/populate_tables.py --run test_user --db server/fixtures/databases/test.db
 """
 import sys
 import os
@@ -16,7 +16,9 @@ from datetime import datetime
 
 # ensure project root on path so we can import server.database
 script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, '..'))
+server_dir = os.path.abspath(os.path.join(script_dir, '..'))
+fixtures_dir = os.path.join(server_dir, 'fixtures')
+project_root = os.path.abspath(os.path.join(server_dir, '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
@@ -272,8 +274,11 @@ def auto_import_file(db_path, input_path, user_id=None):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--run', choices=['test_user','test_nearby','test_event','test_daily','auto_import','all'], default='all')
-    p.add_argument('--db', default=os.path.join(script_dir, 'elderly_care_unified.db'))
-    p.add_argument('--input', default=os.path.join(script_dir, 'sample_input.txt'))
+    p.add_argument(
+        '--db',
+        default=os.path.join(fixtures_dir, 'databases', 'elderly_care_unified.db'),
+    )
+    p.add_argument('--input', default=os.path.join(fixtures_dir, 'sample_input.txt'))
     p.add_argument('--user-id', default=None)
     args = p.parse_args()
 

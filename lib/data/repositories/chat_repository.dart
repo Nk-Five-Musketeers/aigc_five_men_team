@@ -144,19 +144,53 @@ class ChatRepository {
     );
   }
 
+  /// 本地 NLP 润色（`server/nlp_speech_polish.py`，无需 AppKey）。
+  Future<String> polishSpeechTranscriptLocal(String rawTranscript) async {
+    final raw = rawTranscript.trim();
+    if (raw.isEmpty) return raw;
+
+    final response = await _apiClient.dio.post<Map<String, dynamic>>(
+      '/api/speech/polish',
+      data: <String, dynamic>{'text': raw},
+    );
+
+    final data = response.data;
+    final ok = data?['ok'] == true;
+    final text = (data?['text'] as String?)?.trim() ?? '';
+    if (!ok || text.isEmpty) {
+      throw DioException(
+        requestOptions: response.requestOptions,
+        response: response,
+        message: '本地润色结果无效',
+      );
+    }
+    return text;
+  }
+
   /// 调用大模型整理语音识别文本；失败时由调用方回退为原文。
   ///
   /// 请求自带 [system] 消息，本地代理不会拼接陪伴场景的长 system（见 `local_chat_server.py`）。
-  Future<String> polishSpeechTranscript(String rawTranscript) async {
+  /// [knownNamesHint] 为档案中已有称谓/人名，仅用于对照纠错，勿编造。
+  Future<String> polishSpeechTranscript(
+    String rawTranscript, {
+    String knownNamesHint = '',
+  }) async {
     final raw = rawTranscript.trim();
     if (raw.isEmpty) return raw;
+
+    var systemPrompt = _speechPolishSystemPrompt;
+    final hint = knownNamesHint.trim();
+    if (hint.isNotEmpty) {
+      systemPrompt +=
+          '\n\n【档案中已有的人名/称谓（仅作同音错字对照，禁止编造新的人名）】\n$hint';
+    }
 
     final response = await _apiClient.dio.post<Map<String, dynamic>>(
       '/api/chat',
       data: <String, dynamic>{
         'model': AppConstants.modelId,
         'messages': <Map<String, String>>[
-          {'role': 'system', 'content': _speechPolishSystemPrompt},
+          {'role': 'system', 'content': systemPrompt},
           {'role': 'user', 'content': '【语音识别结果】\n$raw'},
         ],
         'temperature': 0.12,

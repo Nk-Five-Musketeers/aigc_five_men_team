@@ -8,9 +8,11 @@ import 'package:provider/provider.dart';
 import '../../config/theme.dart';
 import '../../core/voice_input/voice_input.dart';
 import '../../data/models/chat_message.dart';
+import '../../data/models/memory_album.dart';
 import '../../data/models/profile_photo.dart';
 import '../../data/models/relation_conflict_record.dart';
 import '../../data/local_db/local_database.dart';
+import '../../data/repositories/memory_album_repository.dart';
 import '../../logic/chat_provider.dart';
 import 'data_preentry_screen.dart';
 
@@ -1016,8 +1018,8 @@ class _MemoryBookView extends StatefulWidget {
 }
 
 class _MemoryBookViewState extends State<_MemoryBookView> {
-  late Future<List<ProfilePhotoModel>> _future;
-  ProfilePhotoCategory? _filter;
+  late Future<MemoryAlbumDraft> _future;
+  final MemoryAlbumRepository _repository = MemoryAlbumRepository();
 
   @override
   void initState() {
@@ -1033,268 +1035,646 @@ class _MemoryBookViewState extends State<_MemoryBookView> {
     }
   }
 
-  Future<List<ProfilePhotoModel>> _load() {
-    return LocalDatabase.listProfilePhotosForUser(widget.ownerUserId);
+  Future<MemoryAlbumDraft> _load() {
+    return _repository.buildForUser(widget.ownerUserId);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const Padding(
-          padding: EdgeInsets.fromLTRB(4, 8, 4, 4),
-          child: Text(
-            '回忆图鉴',
-            style: TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.w700,
-              color: AppTheme.text,
+    return FutureBuilder<MemoryAlbumDraft>(
+      future: _future,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final draft = snapshot.data!;
+        final album = draft.album;
+        final photosById = draft.photosById;
+        if (!album.hasContent) {
+          return ListView(
+            padding: const EdgeInsets.only(bottom: 14),
+            children: [
+              _MemoryAlbumHeader(onRefresh: _refresh),
+              const SizedBox(height: 16),
+              const _EmptyHint(
+                title: '还在等第一段回忆',
+                hint: '可以先到「设置 → 数据预录入」里加一张照片，或写下一位家里人',
+              ),
+            ],
+          );
+        }
+        return ListView(
+          padding: const EdgeInsets.only(bottom: 14),
+          children: [
+            _MemoryAlbumHeader(onRefresh: _refresh),
+            _AlbumCoverPanel(
+              album: album,
+              photo: photosById[album.cover.recommendedCoverPhotoId],
             ),
-          ),
-        ),
-        const Padding(
-          padding: EdgeInsets.fromLTRB(4, 0, 4, 10),
-          child: Text(
-            '每一张照片，都可以陪您好好想一想',
-            style: TextStyle(
-              fontSize: 19,
-              fontWeight: FontWeight.w400,
-              color: AppTheme.textSoft,
-            ),
-          ),
-        ),
-        _MemoryFilterChips(
-          current: _filter,
-          onSelect: (cat) => setState(() => _filter = cat),
-        ),
-        const SizedBox(height: 10),
-        Expanded(
-          child: FutureBuilder<List<ProfilePhotoModel>>(
-            future: _future,
-            builder: (context, snapshot) {
-              if (!snapshot.hasData) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              var photos = snapshot.data!;
-              if (_filter != null) {
-                photos =
-                    photos.where((p) => p.category == _filter).toList();
-              }
-              if (photos.isEmpty) {
-                return const _EmptyHint(
-                  title: '相册暂时还是空的',
-                  hint: '到「设置 → 数据预录入 → 照片」里慢慢添加',
-                );
-              }
-              return GridView.builder(
-                padding: const EdgeInsets.only(bottom: 14),
-                gridDelegate:
-                    const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  crossAxisSpacing: 10,
-                  mainAxisSpacing: 10,
-                  childAspectRatio: 0.78,
-                ),
-                itemCount: photos.length,
-                itemBuilder: (context, index) => _MemoryPhotoTile(
-                  photo: photos[index],
-                  onFavoriteChanged: () => setState(() => _future = _load()),
-                ),
-              );
-            },
-          ),
-        ),
-      ],
+            _AlbumTextPanel(text: album.opening),
+            _AlbumProfilePanel(card: album.elderProfileCard),
+            for (final chapter in album.chapters)
+              _AlbumChapterPanel(
+                chapter: chapter,
+                photosById: photosById,
+              ),
+            if (album.timeline.isNotEmpty)
+              _AlbumTimelinePanel(entries: album.timeline),
+            if (album.familyQuestions.isNotEmpty)
+              _AlbumQuestionsPanel(questions: album.familyQuestions),
+            _AlbumNotesPanel(notes: album.notes),
+            _AlbumTextPanel(text: album.ending),
+          ],
+        );
+      },
     );
+  }
+
+  void _refresh() {
+    setState(() => _future = _load());
   }
 }
 
-class _MemoryFilterChips extends StatelessWidget {
-  const _MemoryFilterChips({required this.current, required this.onSelect});
+class _MemoryAlbumHeader extends StatelessWidget {
+  const _MemoryAlbumHeader({required this.onRefresh});
 
-  final ProfilePhotoCategory? current;
-  final ValueChanged<ProfilePhotoCategory?> onSelect;
-
-  static const _entries = <(ProfilePhotoCategory?, String)>[
-    (null, '全部'),
-    (ProfilePhotoCategory.family, '家庭'),
-    (ProfilePhotoCategory.memory, '经历'),
-    (ProfilePhotoCategory.daily, '日常'),
-    (ProfilePhotoCategory.avatar, '头像'),
-  ];
+  final VoidCallback onRefresh;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 48,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 4),
-        itemCount: _entries.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (context, index) {
-          final (cat, label) = _entries[index];
-          final active = current == cat;
-          return Material(
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(AppTheme.radiusPill),
-              onTap: () => onSelect(cat),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: active ? AppTheme.primary : AppTheme.surface1,
-                  borderRadius:
-                      BorderRadius.circular(AppTheme.radiusPill),
-                  border: Border.all(
-                    color: active
-                        ? AppTheme.primary
-                        : AppTheme.borderHairline,
-                    width: 1,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 8, 0, 10),
+      child: Row(
+        children: [
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '回忆图鉴',
+                  style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.text,
                   ),
                 ),
-                child: Text(
-                  label,
+                SizedBox(height: 2),
+                Text(
+                  '把人、事和照片慢慢放进一本册子',
                   style: TextStyle(
                     fontSize: 19,
-                    fontWeight: FontWeight.w600,
-                    color: active ? Colors.white : AppTheme.text,
+                    fontWeight: FontWeight.w400,
+                    color: AppTheme.textSoft,
                   ),
                 ),
-              ),
+              ],
             ),
-          );
-        },
+          ),
+          IconButton(
+            tooltip: '刷新',
+            onPressed: onRefresh,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+        ],
       ),
     );
   }
 }
 
-class _MemoryPhotoTile extends StatelessWidget {
-  const _MemoryPhotoTile({
-    required this.photo,
-    required this.onFavoriteChanged,
-  });
+class _AlbumCoverPanel extends StatelessWidget {
+  const _AlbumCoverPanel({required this.album, required this.photo});
 
-  final ProfilePhotoModel photo;
-  final VoidCallback onFavoriteChanged;
-
-  String get _categoryLabel {
-    return switch (photo.category) {
-      ProfilePhotoCategory.avatar => '头像',
-      ProfilePhotoCategory.family => '家庭',
-      ProfilePhotoCategory.memory => '经历',
-      ProfilePhotoCategory.daily => '日常',
-      ProfilePhotoCategory.other => '其他',
-    };
-  }
+  final MemoryAlbum album;
+  final ProfilePhotoModel? photo;
 
   @override
   Widget build(BuildContext context) {
-    final caption = (photo.caption ?? '').trim();
-    final subtitle = [
-      _categoryLabel,
-      if ((photo.photoTime ?? '').trim().isNotEmpty) photo.photoTime!.trim(),
-    ].join(' · ');
+    return _AlbumPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (photo != null) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+              child: SizedBox(
+                height: 210,
+                child: _MemoryPhotoImage(photo: photo!),
+              ),
+            ),
+            const SizedBox(height: 14),
+          ],
+          Text(
+            album.albumTitle,
+            style: const TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.w800,
+              color: AppTheme.text,
+              height: 1.15,
+            ),
+          ),
+          if (album.albumSubtitle.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              album.albumSubtitle,
+              style: const TextStyle(
+                fontSize: 19,
+                fontWeight: FontWeight.w500,
+                color: AppTheme.primaryDeep,
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
+          Text(
+            album.cover.coverText,
+            style: const TextStyle(
+              fontSize: 20,
+              height: 1.45,
+              color: AppTheme.text,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
+class _AlbumTextPanel extends StatelessWidget {
+  const _AlbumTextPanel({required this.text});
+
+  final AlbumText text;
+
+  @override
+  Widget build(BuildContext context) {
+    if (text.content.trim().isEmpty) return const SizedBox.shrink();
+    return _AlbumPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _AlbumSectionTitle(text.title),
+          const SizedBox(height: 8),
+          Text(
+            text.content,
+            style: const TextStyle(
+              fontSize: 20,
+              height: 1.48,
+              color: AppTheme.text,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlbumProfilePanel extends StatelessWidget {
+  const _AlbumProfilePanel({required this.card});
+
+  final ElderProfileCard card;
+
+  @override
+  Widget build(BuildContext context) {
+    if (card.profileItems.isEmpty) return const SizedBox.shrink();
+    return _AlbumPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _AlbumSectionTitle(card.title),
+          const SizedBox(height: 8),
+          Text(
+            card.content,
+            style: const TextStyle(
+              fontSize: 20,
+              height: 1.45,
+              color: AppTheme.text,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final item in card.profileItems)
+                _AlbumInfoPill(label: item.label, value: item.value),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlbumChapterPanel extends StatelessWidget {
+  const _AlbumChapterPanel({
+    required this.chapter,
+    required this.photosById,
+  });
+
+  final MemoryAlbumChapter chapter;
+  final Map<String, ProfilePhotoModel> photosById;
+
+  @override
+  Widget build(BuildContext context) {
+    if (chapter.items.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 12, 4, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  chapter.chapterTitle,
+                  style: const TextStyle(
+                    fontSize: 25,
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.text,
+                    height: 1.2,
+                  ),
+                ),
+                if (chapter.chapterSubtitle.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    chapter.chapterSubtitle,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w500,
+                      color: AppTheme.textSoft,
+                    ),
+                  ),
+                ],
+                if (chapter.chapterIntro.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    chapter.chapterIntro,
+                    style: const TextStyle(
+                      fontSize: 19,
+                      height: 1.4,
+                      color: AppTheme.text,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          for (final item in chapter.items)
+            _AlbumItemPanel(
+              item: item,
+              photo: photosById[item.photoId],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlbumItemPanel extends StatelessWidget {
+  const _AlbumItemPanel({required this.item, required this.photo});
+
+  final MemoryAlbumItem item;
+  final ProfilePhotoModel? photo;
+
+  @override
+  Widget build(BuildContext context) {
+    return _AlbumPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (photo != null) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+              child: SizedBox(
+                height: 190,
+                child: _MemoryPhotoImage(photo: photo!),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _AlbumTypeBadge(type: item.itemType),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  item.title,
+                  style: const TextStyle(
+                    fontSize: 22,
+                    height: 1.25,
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.text,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            item.content,
+            style: const TextStyle(
+              fontSize: 20,
+              height: 1.5,
+              color: AppTheme.text,
+            ),
+          ),
+          if (item.familyQuestions.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            for (final question in item.familyQuestions)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(
+                      Icons.help_outline_rounded,
+                      size: 18,
+                      color: AppTheme.primaryDeep,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        question,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          height: 1.35,
+                          color: AppTheme.textSoft,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AlbumTimelinePanel extends StatelessWidget {
+  const _AlbumTimelinePanel({required this.entries});
+
+  final List<MemoryTimelineEntry> entries;
+
+  @override
+  Widget build(BuildContext context) {
+    return _AlbumPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _AlbumSectionTitle('时间线'),
+          const SizedBox(height: 8),
+          for (final entry in entries.take(10))
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 82,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: AppTheme.surface2,
+                      borderRadius:
+                          BorderRadius.circular(AppTheme.radiusMedium),
+                    ),
+                    child: Text(
+                      entry.time.isEmpty ? '待补' : entry.time,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.primaryDeep,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          entry.title,
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                            color: AppTheme.text,
+                          ),
+                        ),
+                        if (entry.content.trim().isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 3),
+                            child: Text(
+                              entry.content,
+                              style: const TextStyle(
+                                fontSize: 18,
+                                height: 1.4,
+                                color: AppTheme.textSoft,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlbumQuestionsPanel extends StatelessWidget {
+  const _AlbumQuestionsPanel({required this.questions});
+
+  final List<FamilyQuestion> questions;
+
+  @override
+  Widget build(BuildContext context) {
+    return _AlbumPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _AlbumSectionTitle('可以再问问家里人'),
+          const SizedBox(height: 8),
+          for (final question in questions)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    question.question,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      height: 1.35,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.text,
+                    ),
+                  ),
+                  if (question.reason.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        question.reason,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          height: 1.35,
+                          color: AppTheme.textSoft,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlbumNotesPanel extends StatelessWidget {
+  const _AlbumNotesPanel({required this.notes});
+
+  final AlbumNotes notes;
+
+  @override
+  Widget build(BuildContext context) {
+    if (notes.missingInformation.isEmpty && notes.addedParts.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return _AlbumPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _AlbumSectionTitle('还可以慢慢补'),
+          const SizedBox(height: 8),
+          if (notes.addedParts.isNotEmpty)
+            Text(
+              '现在已经写下：${notes.addedParts.join('、')}',
+              style: const TextStyle(
+                fontSize: 18,
+                height: 1.4,
+                color: AppTheme.textSoft,
+              ),
+            ),
+          if (notes.missingInformation.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              '以后还可以补：${notes.missingInformation.join('、')}',
+              style: const TextStyle(
+                fontSize: 18,
+                height: 1.4,
+                color: AppTheme.textSoft,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AlbumPanel extends StatelessWidget {
+  const _AlbumPanel({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: AppTheme.surface1,
         borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
         border: Border.all(color: AppTheme.borderHairline, width: 1),
       ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                ColoredBox(
-                  color: AppTheme.surface2,
-                  child: _MemoryPhotoImage(photo: photo),
-                ),
-                Positioned(
-                  top: 6,
-                  right: 6,
-                  child: Material(
-                    color: Colors.black45,
-                    shape: const CircleBorder(),
-                    child: IconButton(
-                      padding: const EdgeInsets.all(6),
-                      constraints: const BoxConstraints(
-                        minWidth: 36,
-                        minHeight: 36,
-                      ),
-                      tooltip: photo.isFavorite ? '取消重点' : '标为重点',
-                      onPressed: () async {
-                        await LocalDatabase.setProfilePhotoFavorite(
-                          photo.id,
-                          !photo.isFavorite,
-                        );
-                        onFavoriteChanged();
-                      },
-                      icon: Icon(
-                        photo.isFavorite
-                            ? Icons.star_rounded
-                            : Icons.star_outline_rounded,
-                        color: Colors.white,
-                        size: 22,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        caption.isEmpty ? '未命名' : caption,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w600,
-                          color: caption.isEmpty
-                              ? AppTheme.textCaption
-                              : AppTheme.text,
-                        ),
-                      ),
-                    ),
-                    if (photo.isFavorite)
-                      const Icon(
-                        Icons.star_rounded,
-                        size: 18,
-                        color: AppTheme.accent,
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w500,
-                    color: AppTheme.textCaption,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+      child: child,
+    );
+  }
+}
+
+class _AlbumSectionTitle extends StatelessWidget {
+  const _AlbumSectionTitle(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: const TextStyle(
+        fontSize: 23,
+        height: 1.2,
+        fontWeight: FontWeight.w800,
+        color: AppTheme.text,
+      ),
+    );
+  }
+}
+
+class _AlbumInfoPill extends StatelessWidget {
+  const _AlbumInfoPill({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: AppTheme.surface2,
+        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+      ),
+      child: Text(
+        '$label：$value',
+        style: const TextStyle(
+          fontSize: 17,
+          fontWeight: FontWeight.w600,
+          color: AppTheme.text,
+        ),
+      ),
+    );
+  }
+}
+
+class _AlbumTypeBadge extends StatelessWidget {
+  const _AlbumTypeBadge({required this.type});
+
+  final String type;
+
+  String get _label {
+    return switch (type) {
+      'photo_card' => '照片',
+      'profile_card' => '人物',
+      'timeline_card' => '经历',
+      'quote_card' => '话语',
+      'question_card' => '问题',
+      _ => '文字',
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppTheme.primarySoft,
+        borderRadius: BorderRadius.circular(AppTheme.radiusPill),
+      ),
+      child: Text(
+        _label,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 15,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }
@@ -2385,6 +2765,7 @@ class _BottomVoiceBar extends StatelessWidget {
   }
 }
 
+
 class _SideAction extends StatelessWidget {
   const _SideAction({
     required this.label,
@@ -2482,4 +2863,3 @@ class _ModeButton extends StatelessWidget {
     );
   }
 }
-

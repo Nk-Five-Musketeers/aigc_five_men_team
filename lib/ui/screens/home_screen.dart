@@ -60,6 +60,13 @@ class _HomeScreenState extends State<HomeScreen> {
     await context.read<ChatProvider>().sendMessage(text);
   }
 
+  void _dismissKeyboardInput({bool closeInputPanel = false}) {
+    FocusManager.instance.primaryFocus?.unfocus();
+    if (closeInputPanel && _keyboardOpen) {
+      setState(() => _keyboardOpen = false);
+    }
+  }
+
   Future<void> _onVoiceButtonTap() async {
     final messenger = ScaffoldMessenger.maybeOf(context);
     final chat = context.read<ChatProvider>();
@@ -193,45 +200,56 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
-      body: Align(
-        alignment: Alignment.topCenter,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: _kAppMaxWidth),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (chat.pendingRelationConflicts.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  _RelationConflictBanner(
-                    conflict: chat.pendingRelationConflicts.first,
-                  ),
-                ],
-                const SizedBox(height: 8),
-                Expanded(child: _buildView()),
-                if (showChatInputs) ...[
-                  if (_keyboardOpen) ...[
-                    _TypingPanel(
-                      controller: _messageController,
-                      isSending: chat.isSending,
-                      onSend: _sendTypedMessage,
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: _dismissKeyboardInput,
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: _kAppMaxWidth),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (chat.pendingRelationConflicts.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    _RelationConflictBanner(
+                      conflict: chat.pendingRelationConflicts.first,
                     ),
-                    const SizedBox(height: 8),
                   ],
-                  _BottomVoiceBar(
-                    keyboardOpen: _keyboardOpen,
-                    isSending: chat.isSending,
-                    isRecording: _isRecording,
-                    isRecognizing: _isRecognizing,
-                    onKeyboardTap: () {
-                      setState(() => _keyboardOpen = !_keyboardOpen);
-                    },
-                    onVoiceTap: _onVoiceButtonTap,
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onTap: () =>
+                          _dismissKeyboardInput(closeInputPanel: true),
+                      child: _buildView(),
+                    ),
                   ),
-                  const SizedBox(height: 6),
+                  if (showChatInputs) ...[
+                    if (_keyboardOpen) ...[
+                      _TypingPanel(
+                        controller: _messageController,
+                        isSending: chat.isSending,
+                        onSend: _sendTypedMessage,
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    _BottomVoiceBar(
+                      keyboardOpen: _keyboardOpen,
+                      isSending: chat.isSending,
+                      isRecording: _isRecording,
+                      isRecognizing: _isRecognizing,
+                      onKeyboardTap: () {
+                        setState(() => _keyboardOpen = !_keyboardOpen);
+                      },
+                      onVoiceTap: _onVoiceButtonTap,
+                    ),
+                    const SizedBox(height: 6),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),
@@ -334,24 +352,138 @@ class _HomeScreenState extends State<HomeScreen> {
 
 }
 
-class _HomeCompanionView extends StatelessWidget {
+class _HomeCompanionView extends StatefulWidget {
   const _HomeCompanionView({super.key});
+
+  @override
+  State<_HomeCompanionView> createState() => _HomeCompanionViewState();
+}
+
+class _HomeCompanionViewState extends State<_HomeCompanionView> {
+  final ScrollController _scrollController = ScrollController();
+  bool _showScrollToBottom = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_updateScrollToBottomVisibility);
+  }
+
+  @override
+  void dispose() {
+    _scrollController
+      ..removeListener(_updateScrollToBottomVisibility)
+      ..dispose();
+    super.dispose();
+  }
+
+  void _updateScrollToBottomVisibility() {
+    if (!mounted || !_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    final distanceToBottom = position.maxScrollExtent - position.pixels;
+    final shouldShow = distanceToBottom > 160;
+    if (shouldShow == _showScrollToBottom) return;
+    setState(() => _showScrollToBottom = shouldShow);
+  }
+
+  Future<void> _scrollToBottom() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    if (!_scrollController.hasClients) return;
+    await _scrollController.animateTo(
+      _scrollController.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return Consumer<ChatProvider>(
       builder: (context, chat, _) {
-        return ListView(
-          padding: const EdgeInsets.only(bottom: 14),
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _updateScrollToBottomVisibility(),
+        );
+
+        return Stack(
           children: [
-            _ChatCompanionCard(
-              messages: chat.messages,
-              isSending: chat.isSending,
-              onOptionTap: chat.sendOption,
+            ListView(
+              controller: _scrollController,
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              padding: EdgeInsets.only(
+                bottom: _showScrollToBottom ? 76 : 14,
+              ),
+              children: [
+                _ChatCompanionCard(
+                  messages: chat.messages,
+                  isSending: chat.isSending,
+                  onOptionTap: chat.sendOption,
+                ),
+              ],
+            ),
+            Positioned(
+              right: 14,
+              bottom: 18,
+              child: IgnorePointer(
+                ignoring: !_showScrollToBottom,
+                child: AnimatedOpacity(
+                  opacity: _showScrollToBottom ? 1 : 0,
+                  duration: const Duration(milliseconds: 180),
+                  child: _ScrollToBottomButton(
+                    onTap: () => unawaited(_scrollToBottom()),
+                  ),
+                ),
+              ),
             ),
           ],
         );
       },
+    );
+  }
+}
+
+class _ScrollToBottomButton extends StatelessWidget {
+  const _ScrollToBottomButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppTheme.surface1,
+      elevation: 2,
+      shadowColor: const Color(0x22000000),
+      borderRadius: BorderRadius.circular(AppTheme.radiusPill),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppTheme.radiusPill),
+        onTap: onTap,
+        child: Container(
+          height: 48,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppTheme.radiusPill),
+            border: Border.all(color: AppTheme.borderHairline, width: 1),
+          ),
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.keyboard_arrow_down_rounded,
+                size: 24,
+                color: AppTheme.primaryDeep,
+              ),
+              SizedBox(width: 4),
+              Text(
+                '回到底部',
+                style: TextStyle(
+                  color: AppTheme.primaryDeep,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

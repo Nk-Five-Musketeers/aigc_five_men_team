@@ -14,6 +14,7 @@ import '../core/voice_input/voice_input.dart';
 import 'profile_photo_reply.dart';
 import 'relation_extractor.dart';
 import 'prompt_task_router.dart';
+import 'user_archive_cache.dart';
 import '../data/models/profile_photo.dart';
 
 class ChatProvider extends ChangeNotifier {
@@ -38,6 +39,13 @@ class ChatProvider extends ChangeNotifier {
   bool _isSending = false;
   int _userTurnCount = 0;
   String _lastUserText = '';
+
+  /// 最近一次「看照片」检索原话；用于用户说「不是这张」时换批展示。
+  String? _activePhotoQueryText;
+  final Set<String> _shownPhotoIdsForActiveQuery = <String>{};
+
+  UserArchiveCache? _archiveCache;
+  Future<UserArchiveCache>? _archivePrefetchFuture;
 
   bool get isSending => _isSending;
 
@@ -82,28 +90,30 @@ class ChatProvider extends ChangeNotifier {
   /// 供语音润色对照的档案人名/称谓（不写入对话抽取逻辑）。
   Future<String> _knownNamesHintForSpeechPolish() async {
     try {
-      final lines = <String>[];
-      final familyRows =
-          await LocalDatabase.listFamilyMembersForUser(_activeUserId);
-      for (final r in familyRows.take(12)) {
-        final name = (r['name'] as String?)?.trim() ?? '';
-        if (name.length < 2) continue;
-        final rel = (r['relation'] as String?)?.trim() ?? '';
-        lines.add(rel.isEmpty ? name : '$rel $name');
-      }
-      final nearbyRows =
-          await LocalDatabase.getNearbyPeopleForUser(_activeUserId);
-      for (final r in nearbyRows.take(12)) {
-        final name = (r['name'] as String?)?.trim() ?? '';
-        if (name.length < 2) continue;
-        final rel = (r['relation'] as String?)?.trim() ?? '';
-        lines.add(rel.isEmpty ? name : '$rel $name');
-      }
-      if (lines.isEmpty) return '';
-      return lines.join('；');
+      final cache = await _ensureArchivePrefetched();
+      return cache.buildKnownNamesHint();
     } catch (_) {
       return '';
     }
+  }
+
+  /// 首次用户发言前预读本地库（档案文字 + 照片列表），后续复用内存快照。
+  Future<UserArchiveCache> _ensureArchivePrefetched() async {
+    if (_archiveCache != null && _archiveCache!.ownerUserId == _activeUserId) {
+      return _archiveCache!;
+    }
+    _archivePrefetchFuture ??= UserArchiveCache.load(_activeUserId);
+    _archiveCache = await _archivePrefetchFuture!;
+    if (_archiveCache!.ownerUserId != _activeUserId) {
+      _invalidateArchiveCache();
+      return _ensureArchivePrefetched();
+    }
+    return _archiveCache!;
+  }
+
+  void _invalidateArchiveCache() {
+    _archiveCache = null;
+    _archivePrefetchFuture = null;
   }
 
   Future<void> sendMessage(
@@ -114,6 +124,8 @@ class ChatProvider extends ChangeNotifier {
     final text = content.trim();
     if (text.isEmpty || _isSending) return;
 
+    final archive = await _ensureArchivePrefetched();
+
     _userTurnCount += 1;
     _lastUserText = text;
     final userMessage = _textMessage(content: text, isUser: true);
@@ -122,16 +134,78 @@ class ChatProvider extends ChangeNotifier {
     _isSending = true;
     notifyListeners();
 
-    final photoReply = await ProfilePhotoReplyResolver.resolve(
-      ownerUserId: _activeUserId,
-      userText: text,
-    );
+    final isPhotoRejection = ProfilePhotoReplyResolver.isRejectionPhrase(text);
+    ProfilePhotoReplyResult photoReply;
 
-    // 有照片可展示：只出图，不走大模型，避免与文字回复打架。
+    if (isPhotoRejection &&
+        _activePhotoQueryText != null &&
+        _activePhotoQueryText!.isNotEmpty) {
+      photoReply = await ProfilePhotoReplyResolver.resolve(
+        userText: text,
+        cache: archive,
+        repository: _repository,
+        excludePhotoIds: _shownPhotoIdsForActiveQuery,
+        isRejection: true,
+        previousQueryText: _activePhotoQueryText,
+      );
+    } else {
+      if (ProfilePhotoReplyResolver.hasPhotoIntent(text)) {
+        _activePhotoQueryText = text;
+        _shownPhotoIdsForActiveQuery.clear();
+      } else if (!isPhotoRejection) {
+        _clearPhotoBrowseSession();
+      }
+      photoReply = await ProfilePhotoReplyResolver.resolve(
+        userText: text,
+        cache: archive,
+        repository: _repository,
+        isRejection: isPhotoRejection,
+      );
+      if (photoReply.queryText != null && photoReply.photoRequested) {
+        _activePhotoQueryText = photoReply.queryText;
+      }
+    }
+
     if (photoReply.status == ProfilePhotoReplyStatus.matched) {
       try {
         await _emitProfilePhotos(photoReply.photos);
+        _shownPhotoIdsForActiveQuery
+            .addAll(photoReply.photos.map((p) => p.id));
         await _extractRelationsFromRecentChat(sourceMessageId: userMessage.id);
+      } finally {
+        _isSending = false;
+        notifyListeners();
+      }
+      return;
+    }
+
+    if (isPhotoRejection &&
+        photoReply.status == ProfilePhotoReplyStatus.exhausted) {
+      try {
+        final hint = _textMessage(
+          content: '相关照片都给您看过了。您可以说要看哪一类，比如「家庭照片」或家里人名字。',
+          isUser: false,
+        );
+        _messages.add(hint);
+        await _trySaveMessage(hint);
+        await _extractRelationsFromRecentChat(sourceMessageId: userMessage.id);
+      } finally {
+        _isSending = false;
+        notifyListeners();
+      }
+      return;
+    }
+
+    if (isPhotoRejection &&
+        _activePhotoQueryText == null &&
+        photoReply.status == ProfilePhotoReplyStatus.notRequested) {
+      try {
+        final hint = _textMessage(
+          content: '您先说想看哪方面的照片，我再给您找，比如「看看家庭照片」。',
+          isUser: false,
+        );
+        _messages.add(hint);
+        await _trySaveMessage(hint);
       } finally {
         _isSending = false;
         notifyListeners();
@@ -190,6 +264,7 @@ class ChatProvider extends ChangeNotifier {
     await LocalDatabase.deleteAllMessagesInConversation(_activeConversationId);
     _messages.clear();
     _userTurnCount = 0;
+    _clearPhotoBrowseSession();
     final welcome = ChatMessage(
       id: _newId('welcome'),
       content: '今天想聊什么？我在这里陪着您，慢慢说就好。',
@@ -219,6 +294,8 @@ class ChatProvider extends ChangeNotifier {
   Future<void> setActiveUserId(String userId) async {
     await _initFuture;
     if (_activeUserId == userId) return;
+    _invalidateArchiveCache();
+    _clearPhotoBrowseSession();
     _activeUserId = userId;
     _activeConversationId =
         await LocalDatabase.ensureHomeConversationForUser(userId);
@@ -273,6 +350,11 @@ class ChatProvider extends ChangeNotifier {
   }
 
   /// 用户要照片但未命中本地档案时，给大模型一句内部提示（写入档案摘要末尾）。
+  void _clearPhotoBrowseSession() {
+    _activePhotoQueryText = null;
+    _shownPhotoIdsForActiveQuery.clear();
+  }
+
   String? _photoLookupNoteForLlm(ProfilePhotoReplyResult photoReply) {
     if (!photoReply.photoRequested) return null;
     return switch (photoReply.status) {
@@ -280,6 +362,8 @@ class ChatProvider extends ChangeNotifier {
         '【系统】老人想看照片，但本地尚未保存任何照片。请温和说明可让家人在「数据预录入」里添加，不要假装已经展示图片。',
       ProfilePhotoReplyStatus.noMatch =>
         '【系统】老人想看照片，但未匹配到具体条目。请结合已知档案自然回应，勿编造已发图。',
+      ProfilePhotoReplyStatus.exhausted =>
+        '【系统】老人已看过当前条件下全部相关照片。请自然接话，可引导说更具体的类别或人物。',
       _ => null,
     };
   }
@@ -343,35 +427,19 @@ class ChatProvider extends ChangeNotifier {
         text.contains('记得');
   }
 
-  /// 老人画像 + 本地库已存档案（预录入/抽取），供重启后对话引用。
-  Future<String> _buildElderBriefWithStoredData(
-    Map<String, dynamic>? user,
-  ) async {
-    var brief = _buildElderBrief(user);
-    final storedLines =
-        await LocalDatabase.queryMemoryContextLinesForUser(_activeUserId);
-    final storedBody = storedLines
-        .where((l) => !l.contains('暂无'))
-        .map((l) => l.startsWith('- ') ? l.substring(2) : l)
-        .where((s) => s.trim().isNotEmpty)
-        .join('\n');
-    if (storedBody.isEmpty) return brief;
-    if (brief == '（暂无详细档案）') return storedBody;
-    return '$brief\n$storedBody';
-  }
-
   /// 与 `server/prompts` v1.1 对齐；通过 PromptTaskRouter 决定 active_task。
   Future<Map<String, dynamic>> _buildPromptContextAsync({
     String? photoLookupNote,
   }) async {
     try {
-      final user = await LocalDatabase.getUserById(_activeUserId);
+      final archive = await _ensureArchivePrefetched();
+      final user = archive.user;
       final route = await PromptTaskRouter.resolve(
         userText: _lastUserText,
         ownerUserId: _activeUserId,
         recentHistory: _messages,
       );
-      var profileBrief = await _buildElderBriefWithStoredData(user);
+      var profileBrief = archive.elderProfileBrief;
       final note = photoLookupNote?.trim();
       if (note != null && note.isNotEmpty) {
         profileBrief = '$profileBrief\n$note';
@@ -409,27 +477,6 @@ class ChatProvider extends ChangeNotifier {
         .map((s) => s.trim())
         .where((s) => s.isNotEmpty)
         .toList();
-  }
-
-  /// 从 users 档案拼成一行简短老人画像（≤ 80 字）。
-  static String _buildElderBrief(Map<String, dynamic>? user) {
-    if (user == null) return '（暂无详细档案）';
-    final parts = <String>[];
-    void add(String label, String key) {
-      final v = (user[key] as String?)?.trim();
-      if (v != null && v.isNotEmpty) {
-        parts.add('$label$v');
-      }
-    }
-
-    add('', 'name');
-    add('', 'birth_year');
-    add('籍贯', 'hometown');
-    add('职业', 'career');
-    add('爱好', 'hobbies');
-    add('性格', 'personality');
-    if (parts.isEmpty) return '（暂无详细档案）';
-    return parts.join('，');
   }
 
   String _buildErrorMessage(Object error) {

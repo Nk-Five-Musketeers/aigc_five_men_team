@@ -248,13 +248,17 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
 
         platform = req_data.get("platform", "AI")
         memory_context = req_data.get("memory_context")
-        system_message = self._resolve_default_system_message(
-            req_data, platform, memory_context
-        )
+        chat_task = req_data.get("chat_task") or ""
 
         has_system_message = any(msg.get("role") == "system" for msg in messages)
+        # 独立任务（选图/润色/抽取）自带 system，勿拼接陪伴长 prompt
         if not has_system_message:
+            system_message = self._resolve_default_system_message(
+                req_data, platform, memory_context
+            )
             messages = [system_message] + messages
+        elif chat_task:
+            print(f"[chat_task] {chat_task}", flush=True)
 
         payload = {
             "model": req_data.get("model") or DEFAULT_MODEL,

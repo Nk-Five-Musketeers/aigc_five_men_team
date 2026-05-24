@@ -7,6 +7,7 @@ import '../../core/api_client.dart';
 import '../models/chat_message.dart';
 import '../models/extracted_relation_hint.dart';
 import '../models/memory_extraction_payload.dart';
+import '../models/photo_intent_plan.dart';
 
 const _fullMemoryExtractSystemPrompt = '''
 你是结构化信息抽取模块。用户消息中只会提供**老人本人的发言文本**（不含陪伴助手/拾忆的回复）。请仅根据这些发言、已有周围人摘要、已有老人档案摘要抽取可写入本地数据库的结构化信息；**禁止**把助手说过的人名、经历、电话等当作事实写入 JSON。
@@ -99,6 +100,46 @@ const _speechPolishSystemPrompt = '''
 - 不要加开场白、不要解释过程、不要反问；不要输出「以下是…」等套话。
 
 只输出整理后的正文一段，不要引号、不要 markdown。
+''';
+
+const _photoIntentSystemPrompt = '''
+你是「老人相册选图」判定模块。根据老人一句话，结合【照片目录】判断要不要展示照片、要哪些、不要哪些。
+
+请深度理解包含、排除、并列与否定，例如：
+- 「输出风景照和头像」→ want_photos=true；include 同时含风景相关与 avatar 分类；exclude 为空。
+- 「只要风景照，不要头像」→ want_photos=true；include 仅风景相关；exclude 含 avatar/头像。
+- 「不要头像」且在看照片 → exclude 含头像；若未说要别的，include 可为空表示「除排除外其余相关」。
+- 纯聊天、未要看图 → want_photos=false。
+
+只输出一个 JSON 对象，不要 markdown，不要解释：
+{
+  "want_photos": true,
+  "include_filters": [
+    {
+      "photo_ids": [],
+      "categories": ["daily"],
+      "keywords": ["风景"],
+      "labels": ["风景照"]
+    }
+  ],
+  "exclude_filters": [
+    {
+      "photo_ids": [],
+      "categories": ["avatar"],
+      "keywords": ["头像"],
+      "labels": ["头像", "老人头像"]
+    }
+  ],
+  "max_photos": 0,
+  "reason_summary": "一句话说明"
+}
+
+字段说明：
+- categories 仅用：avatar | family | memory | daily | other（与目录中英文分类一致）。
+- photo_ids：仅当用户明确指向某 id 时填写，否则 []。
+- keywords/labels：中文关键词，用于匹配说明、人物、地点、分类名。
+- include_filters 为空且 want_photos=true：表示「在排除规则外，展示目录中所有仍相关的照片」。
+- max_photos：用户明确张数则填数字，否则 0 由客户端处理。
 ''';
 
 class ChatRepository {
@@ -234,9 +275,96 @@ class ChatRepository {
     return s.trim();
   }
 
+  /// 独立任务调用 /api/chat（自带 system，与主对话同模型同代理，参数与润色/抽取一致）。
+  Future<Response<Map<String, dynamic>>> _postStandaloneChat({
+    required List<Map<String, String>> messages,
+    required String chatTask,
+    double temperature = 0.15,
+    int maxTokens = 1200,
+  }) async {
+    return _apiClient.dio.post<Map<String, dynamic>>(
+      '/api/chat',
+      data: <String, dynamic>{
+        'model': AppConstants.modelId,
+        'messages': messages,
+        'chat_task': chatTask,
+        'temperature': temperature,
+        'top_p': 0.5,
+        'max_tokens': maxTokens,
+        // 与主对话/润色一致：蓝心上游对 high+thinking 组合常直接返回 error
+        'reasoning_effort': 'minimal',
+        'enable_thinking': false,
+      },
+    );
+  }
+
+  /// 上游或代理返回 error 字段时抛出可读异常（避免误判为「结果为空」）。
+  void _throwIfChatResponseError(Map<String, dynamic>? data, Response response) {
+    if (data == null) return;
+    final err = data['error'];
+    if (err == null) return;
+    final msg = _formatApiError(err);
+    throw DioException(
+      requestOptions: response.requestOptions,
+      response: response,
+      message: msg.isEmpty ? '大模型接口返回 error' : msg,
+    );
+  }
+
+  String _formatApiError(Object err) {
+    if (err is String) return err.trim();
+    if (err is Map) {
+      final m = Map<String, dynamic>.from(
+        err.map((k, v) => MapEntry(k.toString(), v)),
+      );
+      final message = (m['message'] as String?)?.trim();
+      final detail = (m['detail'] as String?)?.trim();
+      final code = m['code']?.toString();
+      final type = (m['type'] as String?)?.trim();
+      final parts = <String>[
+        if (message != null && message.isNotEmpty) message,
+        if (detail != null && detail.isNotEmpty) detail,
+        if (code != null && code.isNotEmpty) 'code=$code',
+        if (type != null && type.isNotEmpty) 'type=$type',
+      ];
+      if (parts.isNotEmpty) return parts.join(' | ');
+      return m.values.map((v) => v.toString()).join(' ');
+    }
+    return err.toString();
+  }
+
+  /// 从独立任务响应中取出 assistant 文本；失败则抛 [DioException]。
+  String _requireAssistantText(Response<Map<String, dynamic>> response) {
+    final data = response.data;
+    _throwIfChatResponseError(data, response);
+    final text = _extractAssistantText(data);
+    if (text != null && text.trim().isNotEmpty) return text.trim();
+    final keys = data?.keys.map((e) => e.toString()).join(',') ?? '';
+    throw DioException(
+      requestOptions: response.requestOptions,
+      response: response,
+      message: '大模型返回无可用文本（keys: $keys）',
+    );
+  }
+
   /// 兼容多种 OpenAI 风格返回（字符串 content、分片列表、reasoning 字段、delta 等）。
   String? _extractAssistantText(Map<String, dynamic>? data) {
     if (data == null) return null;
+    // 含 error 且无 choices 时不再向下解析
+    if (data.containsKey('error') && data['choices'] == null) {
+      final nested = data['data'];
+      if (nested is! Map || !nested.containsKey('choices')) return null;
+    }
+    // 兼容 vivo 平台把 OpenAI 风格结果包在 data 字段里：
+    // { "code": 0, "msg": "...", "data": { "choices": [...] } }
+    final nested = data['data'];
+    if (nested is Map) {
+      final inner = Map<String, dynamic>.from(
+        nested.map((k, v) => MapEntry(k.toString(), v)),
+      );
+      final t = _extractAssistantText(inner);
+      if (t != null && t.trim().isNotEmpty) return t;
+    }
     final choices = data['choices'];
     if (choices is! List || choices.isEmpty) return null;
     final first = choices.first;
@@ -284,8 +412,11 @@ class ChatRepository {
       final buf = StringBuffer();
       for (final part in content) {
         if (part is Map) {
-          final text = part['text'];
-          if (text is String) buf.write(text);
+          final m = Map<String, dynamic>.from(
+            part.map((k, v) => MapEntry(k.toString(), v)),
+          );
+          final text = m['text'];
+          if (text is String && text.isNotEmpty) buf.write(text);
         } else if (part is String) {
           buf.write(part);
         }
@@ -616,6 +747,93 @@ class ChatRepository {
       }
     } catch (_) {}
     return [];
+  }
+
+  /// 调用蓝心 / DeepSeek 判定本次要展示的照片条件（含排除）。
+  Future<PhotoIntentPlan> analyzePhotoDisplayIntent({
+    required String userMessage,
+    required String photoCatalog,
+    bool isRejectionContinuation = false,
+    String? previousUserQuery,
+    List<String> recentlyShownPhotoIds = const [],
+  }) async {
+    final buf = StringBuffer()
+      ..writeln('【照片目录（每行一张，仅可引用下列 id）】')
+      ..writeln(photoCatalog)
+      ..writeln();
+
+    if (isRejectionContinuation) {
+      buf
+        ..writeln('【场景】老人表示上一张不对，需要换一批。')
+        ..writeln('【上一轮检索原话】${previousUserQuery ?? ''}')
+        ..writeln('【本轮已展示过的 photo_id】${recentlyShownPhotoIds.join('、')}')
+        ..writeln('【老人本轮原话】$userMessage');
+    } else {
+      buf.writeln('【老人原话】$userMessage');
+    }
+
+    final response = await _postStandaloneChat(
+      chatTask: 'photo_intent',
+      messages: <Map<String, String>>[
+        {'role': 'system', 'content': _photoIntentSystemPrompt},
+        {'role': 'user', 'content': buf.toString()},
+      ],
+      temperature: 0.12,
+      maxTokens: 1200,
+    );
+
+    final text = _requireAssistantText(response);
+    return _parsePhotoIntentPlan(text);
+  }
+
+  PhotoIntentPlan _parsePhotoIntentPlan(String raw) {
+    final stripped = _stripCodeFence(raw);
+    if (stripped.isEmpty) return PhotoIntentPlan.empty;
+    try {
+      final decoded = jsonDecode(stripped);
+      if (decoded is! Map) return PhotoIntentPlan.empty;
+      final root = Map<String, dynamic>.from(
+        decoded.map((k, v) => MapEntry(k.toString(), v)),
+      );
+      final want = root['want_photos'] == true;
+      return PhotoIntentPlan(
+        wantPhotos: want,
+        includeFilters: _parsePhotoFilters(root['include_filters']),
+        excludeFilters: _parsePhotoFilters(root['exclude_filters']),
+        maxPhotos: (root['max_photos'] as num?)?.toInt() ?? 0,
+        reasonSummary: (root['reason_summary'] as String?)?.trim() ?? '',
+      );
+    } catch (_) {
+      return PhotoIntentPlan.empty;
+    }
+  }
+
+  List<PhotoIntentFilter> _parsePhotoFilters(dynamic raw) {
+    if (raw is! List) return const [];
+    final out = <PhotoIntentFilter>[];
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final m = Map<String, dynamic>.from(
+        item.map((k, v) => MapEntry(k.toString(), v)),
+      );
+      out.add(
+        PhotoIntentFilter(
+          photoIds: _stringList(m['photo_ids']),
+          categories: _stringList(m['categories']),
+          keywords: _stringList(m['keywords']),
+          labels: _stringList(m['labels']),
+        ),
+      );
+    }
+    return out;
+  }
+
+  List<String> _stringList(dynamic raw) {
+    if (raw is! List) return const [];
+    return raw
+        .map((e) => e.toString().trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
   }
 
   String _stripCodeFence(String raw) {

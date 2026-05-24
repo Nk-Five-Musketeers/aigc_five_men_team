@@ -1097,8 +1097,10 @@ class _MemoryBookViewState extends State<_MemoryBookView> {
                   childAspectRatio: 0.78,
                 ),
                 itemCount: photos.length,
-                itemBuilder: (context, index) =>
-                    _MemoryPhotoTile(photo: photos[index]),
+                itemBuilder: (context, index) => _MemoryPhotoTile(
+                  photo: photos[index],
+                  onFavoriteChanged: () => setState(() => _future = _load()),
+                ),
               );
             },
           ),
@@ -1171,9 +1173,13 @@ class _MemoryFilterChips extends StatelessWidget {
 }
 
 class _MemoryPhotoTile extends StatelessWidget {
-  const _MemoryPhotoTile({required this.photo});
+  const _MemoryPhotoTile({
+    required this.photo,
+    required this.onFavoriteChanged,
+  });
 
   final ProfilePhotoModel photo;
+  final VoidCallback onFavoriteChanged;
 
   String get _categoryLabel {
     return switch (photo.category) {
@@ -1204,9 +1210,44 @@ class _MemoryPhotoTile extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Expanded(
-            child: ColoredBox(
-              color: AppTheme.surface2,
-              child: _MemoryPhotoImage(photo: photo),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                ColoredBox(
+                  color: AppTheme.surface2,
+                  child: _MemoryPhotoImage(photo: photo),
+                ),
+                Positioned(
+                  top: 6,
+                  right: 6,
+                  child: Material(
+                    color: Colors.black45,
+                    shape: const CircleBorder(),
+                    child: IconButton(
+                      padding: const EdgeInsets.all(6),
+                      constraints: const BoxConstraints(
+                        minWidth: 36,
+                        minHeight: 36,
+                      ),
+                      tooltip: photo.isFavorite ? '取消重点' : '标为重点',
+                      onPressed: () async {
+                        await LocalDatabase.setProfilePhotoFavorite(
+                          photo.id,
+                          !photo.isFavorite,
+                        );
+                        onFavoriteChanged();
+                      },
+                      icon: Icon(
+                        photo.isFavorite
+                            ? Icons.star_rounded
+                            : Icons.star_outline_rounded,
+                        color: Colors.white,
+                        size: 22,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           Padding(
@@ -1233,8 +1274,8 @@ class _MemoryPhotoTile extends StatelessWidget {
                     ),
                     if (photo.isFavorite)
                       const Icon(
-                        Icons.bookmark_rounded,
-                        size: 16,
+                        Icons.star_rounded,
+                        size: 18,
                         color: AppTheme.accent,
                       ),
                   ],

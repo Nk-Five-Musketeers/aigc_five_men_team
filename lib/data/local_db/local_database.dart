@@ -1319,6 +1319,11 @@ class LocalDatabase {
     );
   }
 
+  /// 切换照片是否收藏（重点照片）。
+  static Future<void> setProfilePhotoFavorite(String id, bool isFavorite) async {
+    await updateProfilePhoto(id, {'is_favorite': isFavorite ? 1 : 0});
+  }
+
   static Future<int> updateProfilePhoto(
     String id,
     Map<String, dynamic> values,

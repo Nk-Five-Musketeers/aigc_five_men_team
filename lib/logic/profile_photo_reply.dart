@@ -1,18 +1,17 @@
-import '../data/local_db/local_database.dart';
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+
+import '../data/models/photo_intent_plan.dart';
 import '../data/models/profile_photo.dart';
+import '../data/repositories/chat_repository.dart';
+import 'user_archive_cache.dart';
 
-/// 根据用户话术从 [profile_photos] 解析要展示的照片。
 enum ProfilePhotoReplyStatus {
-  /// 未表达看照片意图。
   notRequested,
-
-  /// 有看照片意图，但库里没有任何照片。
   noPhotosInDb,
-
-  /// 有看照片意图，模糊匹配后仍无法选出可展示条目。
   noMatch,
-
-  /// 已选出可展示的照片（含模糊匹配）。
+  exhausted,
   matched,
 }
 
@@ -20,21 +19,38 @@ class ProfilePhotoReplyResult {
   const ProfilePhotoReplyResult({
     required this.status,
     this.photos = const [],
+    this.queryText,
+    this.requestedCount = 0,
+    this.planSummary = '',
   });
 
   final ProfilePhotoReplyStatus status;
   final List<ProfilePhotoModel> photos;
+  final String? queryText;
+  final int requestedCount;
+  final String planSummary;
 
-  /// 用户是否在要照片（含模糊说法，如「看看」「给我看」）。
   bool get photoRequested => status != ProfilePhotoReplyStatus.notRequested;
 }
 
 class ProfilePhotoReplyResolver {
   ProfilePhotoReplyResolver._();
 
+  static const _maxPhotosPerBatch = 24;
+
   static final _intentPattern = RegExp(
-    r'照片|相片|图片|相册|图|看一下|看看|给我看|瞧瞧|翻出|找出来|有没有.*照|照.*看看|想看',
+    r'照片|相片|图片|相册|图|看一下|看看|给我看|瞧瞧|翻出|找出来|有没有.*照|照.*看看|想看|输出|展示',
   );
+
+  static final _rejectionPattern = RegExp(
+    r'不是这(张|个|幅|种)?|不对|不是的|换一张|另一张|再看看别的|不是我要的|不要这张|不是那张|不要.*照',
+  );
+
+  static bool isRejectionPhrase(String text) =>
+      _rejectionPattern.hasMatch(text.trim());
+
+  static bool hasPhotoIntent(String text) =>
+      text.trim().isNotEmpty && _intentPattern.hasMatch(text.trim());
 
   static String categoryLabel(ProfilePhotoCategory c) =>
       ProfilePhotoCategoryLabels.label(c);
@@ -50,201 +66,287 @@ class ProfilePhotoReplyResolver {
     return parts.join(' · ');
   }
 
+  /// 预读 catalog + 大模型判定需求 + 本地匹配（可较慢）。
   static Future<ProfilePhotoReplyResult> resolve({
-    required String ownerUserId,
     required String userText,
+    required UserArchiveCache cache,
+    required ChatRepository repository,
+    Set<String> excludePhotoIds = const {},
+    bool isRejection = false,
+    String? previousQueryText,
   }) async {
     final text = userText.trim();
-    if (text.isEmpty || !_intentPattern.hasMatch(text)) {
+    final broadIntent = hasPhotoIntent(text) || isRejection;
+    if (!broadIntent) {
       return const ProfilePhotoReplyResult(
         status: ProfilePhotoReplyStatus.notRequested,
       );
     }
 
-    final all = await LocalDatabase.listProfilePhotosForUser(ownerUserId);
-    if (all.isEmpty) {
-      return const ProfilePhotoReplyResult(
+    if (cache.photos.isEmpty) {
+      return ProfilePhotoReplyResult(
         status: ProfilePhotoReplyStatus.noPhotosInDb,
+        queryText: text,
       );
     }
 
-    final forcedCategory = ProfilePhotoCategoryLabels.categoryFromUserPhrase(text);
-
-    final familyRows =
-        await LocalDatabase.listFamilyMembersForUser(ownerUserId);
-    final familyNames = <int, String>{};
-    for (final r in familyRows) {
-      final id = (r['id'] as num?)?.toInt();
-      final name = (r['name'] as String?)?.trim();
-      if (id != null && name != null && name.length >= 2) {
-        familyNames[id] = name;
-      }
+    PhotoIntentPlan plan;
+    try {
+      plan = await repository
+          .analyzePhotoDisplayIntent(
+            userMessage: text,
+            photoCatalog: cache.buildPhotoCatalogForLlm(),
+            isRejectionContinuation: isRejection,
+            previousUserQuery: previousQueryText,
+            recentlyShownPhotoIds: excludePhotoIds.toList(),
+          )
+          .timeout(const Duration(seconds: 60));
+      debugPrint(
+        '[PhotoReply] LLM plan want=${plan.wantPhotos} '
+        'inc=${plan.includeFilters.length} exc=${plan.excludeFilters.length} '
+        '${plan.reasonSummary}',
+      );
+    } catch (e, st) {
+      debugPrint('[PhotoReply] LLM 选图判定失败，规则回退: $e\n$st');
+      return _resolveWithRules(
+        userText: text,
+        cache: cache,
+        excludePhotoIds: excludePhotoIds,
+        isRejection: isRejection,
+      );
     }
 
-    final wantsSeveral = text.contains('几张') ||
-        text.contains('多') ||
-        text.contains('都') ||
-        text.contains('全部');
+    final planLooksEmpty = !plan.wantPhotos &&
+        plan.includeFilters.isEmpty &&
+        plan.excludeFilters.isEmpty;
+    if (planLooksEmpty && (hasPhotoIntent(text) || isRejection)) {
+      return _resolveWithRules(
+        userText: text,
+        cache: cache,
+        excludePhotoIds: excludePhotoIds,
+        isRejection: isRejection,
+      );
+    }
 
-    var pool = forcedCategory == null
-        ? all
-        : all.where((p) => p.category == forcedCategory).toList();
+    if (!plan.wantPhotos && !isRejection) {
+      return const ProfilePhotoReplyResult(
+        status: ProfilePhotoReplyStatus.notRequested,
+      );
+    }
 
-    // 用户点了类别但库里该分类为空：在全库中按类别标签再筛一次（防历史数据 category 填错）
-    if (pool.isEmpty && forcedCategory != null) {
-      pool = all
-          .where((p) =>
-              ProfilePhotoCategoryLabels.phraseIndicatesCategory(
-                '${ProfilePhotoCategoryLabels.label(p.category)} $text',
-                forcedCategory,
-              ))
+    if (!plan.wantPhotos && isRejection) {
+      plan = PhotoIntentPlan(
+        wantPhotos: true,
+        includeFilters: plan.includeFilters,
+        excludeFilters: plan.excludeFilters,
+        maxPhotos: plan.maxPhotos,
+        reasonSummary: plan.reasonSummary,
+      );
+    }
+
+    var matched = _applyPlan(
+      cache.photos,
+      plan,
+      excludePhotoIds: excludePhotoIds,
+    );
+
+    if (matched.isEmpty) {
+      matched = _applyPlan(
+        cache.photos,
+        plan,
+        excludePhotoIds: excludePhotoIds,
+        loose: true,
+      );
+    }
+
+    if (matched.isEmpty) {
+      if (excludePhotoIds.isNotEmpty && isRejection) {
+        return ProfilePhotoReplyResult(
+          status: ProfilePhotoReplyStatus.exhausted,
+          queryText: previousQueryText ?? text,
+          planSummary: plan.reasonSummary,
+        );
+      }
+      return ProfilePhotoReplyResult(
+        status: ProfilePhotoReplyStatus.noMatch,
+        queryText: text,
+        planSummary: plan.reasonSummary,
+      );
+    }
+
+    final limit = plan.maxPhotos > 0
+        ? plan.maxPhotos.clamp(1, _maxPhotosPerBatch)
+        : _decideOutputCount(
+            text,
+            matched.length,
+            isRejection: isRejection,
+          );
+    final batch = matched.take(limit).toList();
+
+    return ProfilePhotoReplyResult(
+      status: ProfilePhotoReplyStatus.matched,
+      photos: batch,
+      queryText: text,
+      requestedCount: limit,
+      planSummary: plan.reasonSummary,
+    );
+  }
+
+  static List<ProfilePhotoModel> _applyPlan(
+    List<ProfilePhotoModel> all,
+    PhotoIntentPlan plan, {
+    required Set<String> excludePhotoIds,
+    bool loose = false,
+  }) {
+    var pool = all.where((p) => !excludePhotoIds.contains(p.id)).toList();
+
+    if (plan.excludeFilters.isNotEmpty) {
+      pool = pool
+          .where((p) => !_matchesAnyFilter(p, plan.excludeFilters, loose: loose))
           .toList();
     }
 
-    if (pool.isEmpty) {
-      return const ProfilePhotoReplyResult(
-        status: ProfilePhotoReplyStatus.noMatch,
-      );
+    final hasInclude = plan.includeFilters.any((f) => !f.isEmpty);
+    if (hasInclude) {
+      pool = pool
+          .where((p) => _matchesAnyFilter(p, plan.includeFilters, loose: loose))
+          .toList();
     }
 
-    final tokens = _tokensFromUserText(text);
-    final scored = <_ScoredPhoto>[];
-    for (final photo in pool) {
-      final score = _scorePhoto(
-        photo,
-        text: text,
-        tokens: tokens,
-        familyNames: familyNames,
-        forcedCategory: forcedCategory,
-      );
-      scored.add(_ScoredPhoto(photo, score));
-    }
-    scored.sort((a, b) => b.score.compareTo(a.score));
-
-    final maxCount = wantsSeveral ? 3 : 1;
-    final topScore = scored.first.score;
-
-    if (topScore >= 16) {
-      final picked =
-          _pickFromScored(scored, maxCount: maxCount, minScore: topScore - 10);
-      if (picked.isNotEmpty) {
-        return ProfilePhotoReplyResult(
-          status: ProfilePhotoReplyStatus.matched,
-          photos: picked,
-        );
-      }
-    }
-
-    if (topScore > 0) {
-      final picked =
-          _pickFromScored(scored, maxCount: wantsSeveral ? 3 : 2, minScore: 1);
-      if (picked.isNotEmpty) {
-        return ProfilePhotoReplyResult(
-          status: ProfilePhotoReplyStatus.matched,
-          photos: picked,
-        );
-      }
-    }
-
-    if (pool.length <= 3) {
-      return ProfilePhotoReplyResult(
-        status: ProfilePhotoReplyStatus.matched,
-        photos: pool.take(3).toList(),
-      );
-    }
-
-    if (forcedCategory != null) {
-      final inCategory = pool.where((p) => p.category == forcedCategory).toList();
-      if (inCategory.isNotEmpty) {
-        return ProfilePhotoReplyResult(
-          status: ProfilePhotoReplyStatus.matched,
-          photos: inCategory.take(wantsSeveral ? 3 : 1).toList(),
-        );
-      }
-    }
-
-    final fuzzy = pool.take(wantsSeveral ? 3 : 1).toList();
-    return ProfilePhotoReplyResult(
-      status: ProfilePhotoReplyStatus.matched,
-      photos: fuzzy,
-    );
+    pool.sort((a, b) {
+      final fav = (b.isFavorite ? 1 : 0).compareTo(a.isFavorite ? 1 : 0);
+      if (fav != 0) return fav;
+      return b.updatedAt.compareTo(a.updatedAt);
+    });
+    return pool;
   }
 
-  static List<ProfilePhotoModel> _pickFromScored(
-    List<_ScoredPhoto> scored, {
-    required int maxCount,
-    required int minScore,
+  static bool _matchesAnyFilter(
+    ProfilePhotoModel photo,
+    List<PhotoIntentFilter> filters, {
+    bool loose = false,
   }) {
-    final out = <ProfilePhotoModel>[];
-    for (final s in scored) {
-      if (s.score < minScore) break;
-      out.add(s.photo);
-      if (out.length >= maxCount) break;
+    for (final f in filters) {
+      if (f.isEmpty) continue;
+      if (_matchesFilter(photo, f, loose: loose)) return true;
     }
-    return out;
+    return false;
   }
 
-  static List<String> _tokensFromUserText(String text) {
-    final stop = RegExp(
-      r'照片|相片|图片|相册|看看|看一下|给我看|有没有|一张|几张|翻|找|的|了|吗|呢|啊|吧|请|想|要|想看|头像|日常|家庭|经历|老人',
-    );
-    var t = text.replaceAll(stop, ' ');
-    t = t.replaceAll(RegExp(r'[\s，,。！？；、]+'), ' ');
-    return t
-        .split(' ')
-        .map((s) => s.trim())
-        .where((s) => s.length >= 2)
-        .toList();
-  }
-
-  static int _scorePhoto(
-    ProfilePhotoModel photo, {
-    required String text,
-    required List<String> tokens,
-    required Map<int, String> familyNames,
-    ProfilePhotoCategory? forcedCategory,
+  static bool _matchesFilter(
+    ProfilePhotoModel photo,
+    PhotoIntentFilter filter, {
+    bool loose = false,
   }) {
-    var score = 0;
-    final blob = [
+    if (filter.photoIds.contains(photo.id)) return true;
+
+    for (final c in filter.categories) {
+      final cat = _categoryFromToken(c);
+      if (cat != null && photo.category == cat) return true;
+    }
+
+    final blob = _photoSearchBlob(photo);
+    for (final kw in [...filter.keywords, ...filter.labels]) {
+      final k = kw.trim();
+      if (k.length < 2) continue;
+      if (blob.contains(k)) return true;
+      if (loose && k.length >= 2 && _fuzzyContains(blob, k)) return true;
+    }
+    return false;
+  }
+
+  static bool _fuzzyContains(String blob, String kw) => blob.contains(kw);
+
+  static ProfilePhotoCategory? _categoryFromToken(String token) {
+    final t = token.trim().toLowerCase();
+    if (t.isEmpty) return null;
+    for (final c in ProfilePhotoCategory.values) {
+      if (c.value == t) return c;
+    }
+    return ProfilePhotoCategoryLabels.categoryFromUserPhrase(token);
+  }
+
+  static String _photoSearchBlob(ProfilePhotoModel photo) {
+    return [
       categoryLabel(photo.category),
       photo.category.value,
       photo.caption ?? '',
       photo.peopleInvolved ?? '',
       photo.location ?? '',
       photo.photoTime ?? '',
-      if (photo.familyMemberId != null)
-        familyNames[photo.familyMemberId!] ?? '',
+      photo.id,
     ].join(' ');
-
-    if (forcedCategory != null && photo.category == forcedCategory) {
-      score += 48;
-    } else if (ProfilePhotoCategoryLabels.phraseIndicatesCategory(
-      text,
-      photo.category,
-    )) {
-      score += 36;
-    }
-
-    for (final alias in ProfilePhotoCategoryLabels.searchAliases[photo.category] ??
-        const []) {
-      if (alias.length >= 2 && text.contains(alias)) {
-        score += 20;
-      }
-    }
-
-    for (final token in tokens) {
-      if (blob.contains(token)) score += 18;
-      if (photo.caption?.contains(token) == true) score += 10;
-      if (photo.peopleInvolved?.contains(token) == true) score += 14;
-    }
-
-    if (photo.isFavorite) score += 3;
-    return score;
   }
-}
 
-class _ScoredPhoto {
-  const _ScoredPhoto(this.photo, this.score);
-  final ProfilePhotoModel photo;
-  final int score;
+  static Future<ProfilePhotoReplyResult> _resolveWithRules({
+    required String userText,
+    required UserArchiveCache cache,
+    required Set<String> excludePhotoIds,
+    required bool isRejection,
+  }) async {
+    final text = userText.trim();
+    if (!shouldOutputPhotos(text, isRejection: isRejection)) {
+      return const ProfilePhotoReplyResult(
+        status: ProfilePhotoReplyStatus.notRequested,
+      );
+    }
+    final forcedCategory = ProfilePhotoCategoryLabels.categoryFromUserPhrase(text);
+    var pool = forcedCategory == null
+        ? List<ProfilePhotoModel>.from(cache.photos)
+        : cache.photos.where((p) => p.category == forcedCategory).toList();
+    pool = pool.where((p) => !excludePhotoIds.contains(p.id)).toList();
+    if (pool.isEmpty) {
+      return ProfilePhotoReplyResult(
+        status: excludePhotoIds.isNotEmpty
+            ? ProfilePhotoReplyStatus.exhausted
+            : ProfilePhotoReplyStatus.noMatch,
+        queryText: text,
+      );
+    }
+    final limit = _decideOutputCount(text, pool.length, isRejection: isRejection);
+    return ProfilePhotoReplyResult(
+      status: ProfilePhotoReplyStatus.matched,
+      photos: pool.take(limit).toList(),
+      queryText: text,
+      requestedCount: limit,
+    );
+  }
+
+  static bool shouldOutputPhotos(String userText, {bool isRejection = false}) {
+    final t = userText.trim();
+    if (t.isEmpty) return false;
+    if (isRejection) return true;
+    return hasPhotoIntent(t);
+  }
+
+  static int _decideOutputCount(
+    String userText,
+    int available, {
+    bool isRejection = false,
+  }) {
+    if (available <= 0) return 0;
+    final cap = available > _maxPhotosPerBatch ? _maxPhotosPerBatch : available;
+    final t = userText.trim();
+
+    if (isRejection) {
+      if (RegExp(r'几张|多张|一些|都').hasMatch(t)) return cap < 3 ? cap : 3;
+      return 1;
+    }
+
+    if (RegExp(r'全部|所有|都给|都看看').hasMatch(t)) return cap;
+
+    final digit = RegExp(r'(\d+)\s*张').firstMatch(t);
+    if (digit != null) {
+      final n = int.tryParse(digit.group(1) ?? '') ?? 1;
+      return n.clamp(1, cap);
+    }
+
+    if (t.contains('两张') || t.contains('2张')) return cap < 2 ? cap : 2;
+    if (t.contains('三张') || t.contains('3张')) return cap < 3 ? cap : 3;
+    if (t.contains('一张') || t.contains('这张')) return 1;
+
+    if (t.contains('几张') || t.contains('多张')) return cap < 3 ? cap : 3;
+
+    return cap;
+  }
 }

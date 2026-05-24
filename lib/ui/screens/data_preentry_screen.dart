@@ -771,13 +771,32 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
         photo.location,
         photo.peopleInvolved,
       ].where((e) => e != null && e.trim().isNotEmpty).join('；'),
-      trailing: IconButton(
-        tooltip: '删除',
-        onPressed: () async {
-          await LocalDatabase.deleteProfilePhoto(photo.id);
-          await _loadAll();
-        },
-        icon: const Icon(Icons.delete_outline_rounded),
+      trailing: Wrap(
+        spacing: 0,
+        children: [
+          IconButton(
+            tooltip: photo.isFavorite ? '取消重点' : '标为重点',
+            onPressed: () async {
+              await LocalDatabase.setProfilePhotoFavorite(
+                photo.id,
+                !photo.isFavorite,
+              );
+              await _loadAll();
+            },
+            icon: Icon(
+              photo.isFavorite ? Icons.star_rounded : Icons.star_outline_rounded,
+              color: photo.isFavorite ? AppTheme.accent : null,
+            ),
+          ),
+          IconButton(
+            tooltip: '删除',
+            onPressed: () async {
+              await LocalDatabase.deleteProfilePhoto(photo.id);
+              await _loadAll();
+            },
+            icon: const Icon(Icons.delete_outline_rounded),
+          ),
+        ],
       ),
     );
   }

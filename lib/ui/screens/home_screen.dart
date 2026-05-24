@@ -1057,8 +1057,8 @@ class _MemoryBookViewState extends State<_MemoryBookView> {
               _MemoryAlbumHeader(onRefresh: _refresh),
               const SizedBox(height: 16),
               const _EmptyHint(
-                title: '回忆图鉴还没有素材',
-                hint: '到「设置 → 数据预录入」里补充老人信息、亲属、经历和照片',
+                title: '还在等第一段回忆',
+                hint: '可以先到「设置 → 数据预录入」里加一张照片，或写下一位家里人',
               ),
             ],
           );
@@ -1120,7 +1120,7 @@ class _MemoryAlbumHeader extends StatelessWidget {
                 ),
                 SizedBox(height: 2),
                 Text(
-                  '把资料、亲属、经历和照片串成一本册子',
+                  '把人、事和照片慢慢放进一本册子',
                   style: TextStyle(
                     fontSize: 19,
                     fontWeight: FontWeight.w400,
@@ -1499,7 +1499,7 @@ class _AlbumQuestionsPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _AlbumSectionTitle('家属补充问题'),
+          const _AlbumSectionTitle('可以再问问家里人'),
           const SizedBox(height: 8),
           for (final question in questions)
             Padding(
@@ -1551,11 +1551,11 @@ class _AlbumNotesPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _AlbumSectionTitle('整理说明'),
+          const _AlbumSectionTitle('还可以慢慢补'),
           const SizedBox(height: 8),
           if (notes.addedParts.isNotEmpty)
             Text(
-              '已生成章节：${notes.addedParts.join('、')}',
+              '现在已经写下：${notes.addedParts.join('、')}',
               style: const TextStyle(
                 fontSize: 18,
                 height: 1.4,
@@ -1565,7 +1565,7 @@ class _AlbumNotesPanel extends StatelessWidget {
           if (notes.missingInformation.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text(
-              '待补充：${notes.missingInformation.join('、')}',
+              '以后还可以补：${notes.missingInformation.join('、')}',
               style: const TextStyle(
                 fontSize: 18,
                 height: 1.4,
@@ -1675,157 +1675,6 @@ class _AlbumTypeBadge extends StatelessWidget {
           fontSize: 15,
           fontWeight: FontWeight.w700,
         ),
-      ),
-    );
-  }
-}
-
-class _MemoryFilterChips extends StatelessWidget {
-  const _MemoryFilterChips({required this.current, required this.onSelect});
-
-  final ProfilePhotoCategory? current;
-  final ValueChanged<ProfilePhotoCategory?> onSelect;
-
-  static const _entries = <(ProfilePhotoCategory?, String)>[
-    (null, '全部'),
-    (ProfilePhotoCategory.family, '家庭'),
-    (ProfilePhotoCategory.memory, '经历'),
-    (ProfilePhotoCategory.daily, '日常'),
-    (ProfilePhotoCategory.avatar, '头像'),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 48,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 4),
-        itemCount: _entries.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (context, index) {
-          final (cat, label) = _entries[index];
-          final active = current == cat;
-          return Material(
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(AppTheme.radiusPill),
-              onTap: () => onSelect(cat),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: active ? AppTheme.primary : AppTheme.surface1,
-                  borderRadius:
-                      BorderRadius.circular(AppTheme.radiusPill),
-                  border: Border.all(
-                    color: active
-                        ? AppTheme.primary
-                        : AppTheme.borderHairline,
-                    width: 1,
-                  ),
-                ),
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 19,
-                    fontWeight: FontWeight.w600,
-                    color: active ? Colors.white : AppTheme.text,
-                  ),
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _MemoryPhotoTile extends StatelessWidget {
-  const _MemoryPhotoTile({required this.photo});
-
-  final ProfilePhotoModel photo;
-
-  String get _categoryLabel {
-    return switch (photo.category) {
-      ProfilePhotoCategory.avatar => '头像',
-      ProfilePhotoCategory.family => '家庭',
-      ProfilePhotoCategory.memory => '经历',
-      ProfilePhotoCategory.daily => '日常',
-      ProfilePhotoCategory.other => '其他',
-    };
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final caption = (photo.caption ?? '').trim();
-    final subtitle = [
-      _categoryLabel,
-      if ((photo.photoTime ?? '').trim().isNotEmpty) photo.photoTime!.trim(),
-    ].join(' · ');
-
-    return Container(
-      decoration: BoxDecoration(
-        color: AppTheme.surface1,
-        borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
-        border: Border.all(color: AppTheme.borderHairline, width: 1),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(
-            child: ColoredBox(
-              color: AppTheme.surface2,
-              child: _MemoryPhotoImage(photo: photo),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        caption.isEmpty ? '未命名' : caption,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w600,
-                          color: caption.isEmpty
-                              ? AppTheme.textCaption
-                              : AppTheme.text,
-                        ),
-                      ),
-                    ),
-                    if (photo.isFavorite)
-                      const Icon(
-                        Icons.bookmark_rounded,
-                        size: 16,
-                        color: AppTheme.accent,
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w500,
-                    color: AppTheme.textCaption,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -2916,6 +2765,7 @@ class _BottomVoiceBar extends StatelessWidget {
   }
 }
 
+
 class _SideAction extends StatelessWidget {
   const _SideAction({
     required this.label,
@@ -3013,4 +2863,3 @@ class _ModeButton extends StatelessWidget {
     );
   }
 }
-

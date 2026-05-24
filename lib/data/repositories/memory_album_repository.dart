@@ -172,21 +172,21 @@ class MemoryAlbumComposer {
       missing.add('亲属信息');
       familyQuestions.add(const FamilyQuestion(
         question: '家里人平时怎么称呼老人？',
-        reason: '补充称呼后，图鉴里的家庭关系会更自然。',
+        reason: '有了熟悉的称呼，家里人的位置会更清楚。',
       ));
     }
     if (memoryEvents.isEmpty) {
       missing.add('人生经历');
       familyQuestions.add(const FamilyQuestion(
         question: '有没有一件老人常提起、家里人也记得的往事？',
-        reason: '重要经历能成为图鉴的主线。',
+        reason: '这样的往事适合慢慢展开成一段故事。',
       ));
     }
     if (photos.isEmpty) {
       missing.add('照片');
       familyQuestions.add(const FamilyQuestion(
-        question: '可以先选一张老人状态最放松的照片吗？',
-        reason: '封面照片能让图鉴一打开就有熟悉感。',
+        question: '可以先选一张老人状态自然的照片吗？',
+        reason: '看到熟悉的照片，话就容易慢慢说起来。',
       ));
     }
 
@@ -235,7 +235,7 @@ class MemoryAlbumComposer {
         recommendedCoverPhotoId: coverPhoto?.id ?? '',
       ),
       opening: AlbumText(
-        title: '慢慢翻开',
+        title: '慢慢翻',
         content: _openingText(elderName, familyMembers, memoryEvents, photos),
       ),
       elderProfileCard: ElderProfileCard(
@@ -280,11 +280,11 @@ class MemoryAlbumComposer {
         title: '日子里的样子',
         content: [
           if (career.isNotEmpty) '$elderName曾经的职业经历里，有“$career”。',
-          if (hobbies.isNotEmpty) '平时喜欢的事，家属记下了“$hobbies”。',
+          if (hobbies.isNotEmpty) '平时喜欢的事里，有“$hobbies”。',
           if (food.isNotEmpty) '饮食习惯里也有熟悉的味道：$food。',
-          if (personality.isNotEmpty) '说起性格，资料里写着“$personality”。',
+          if (personality.isNotEmpty) '说起性格，可以记着“$personality”。',
           if (dialect.isNotEmpty) '他说话里带着$dialect的亲切感。',
-          if (care.isNotEmpty) '家属也留下了照护提醒：$care。',
+          if (care.isNotEmpty) '平时照看时，也记得：$care。',
         ].join(' '),
         relatedProfileFields: const [
           'career',
@@ -300,8 +300,8 @@ class MemoryAlbumComposer {
     return MemoryAlbumChapter(
       chapterId: 'profile',
       chapterTitle: '一个人的轮廓',
-      chapterSubtitle: '先从已经录入的基本信息说起',
-      chapterIntro: '这些信息不需要像表格一样摆出来，放进故事里，就成了家人熟悉的样子。',
+      chapterSubtitle: '先记住那些最熟悉的小事',
+      chapterIntro: '姓名、籍贯、爱好和习惯，放在一起，就是家人眼里熟悉的样子。',
       chapterType: 'profile',
       items: items,
     );
@@ -324,11 +324,11 @@ class MemoryAlbumComposer {
         itemType: 'profile_card',
         title: relation.isEmpty ? name : '$relation · $name',
         content: [
-          relation.isEmpty ? '$name是家属录入的重要亲友。' : '$name是$relation。',
-          if (location.isNotEmpty) '现在常记在资料里的地方是$location。',
+          relation.isEmpty ? '$name是家里记下的重要亲友。' : '$name是$relation。',
+          if (location.isNotEmpty) '现在常在$location。',
           if (contact.isNotEmpty) '联系频率写着：$contact。',
           if (notes.isNotEmpty) notes,
-          if (!active) '这段关系需要家属在讲述时多留意措辞。',
+          if (!active) '说到这段关系时，可以把语气放得更轻一些。',
         ].join(' '),
         relatedProfileFields: const ['family_members'],
         familyQuestions: [
@@ -383,8 +383,8 @@ class MemoryAlbumComposer {
     return MemoryAlbumChapter(
       chapterId: 'life_experience',
       chapterTitle: '走过的日子',
-      chapterSubtitle: '重要经历会成为回忆册的主线',
-      chapterIntro: '每一段经历先按家属录入的事实保留下来，细节不足的地方再慢慢补。',
+      chapterSubtitle: '把那些重要时刻轻轻放好',
+      chapterIntro: '有些往事已经有了时间和地点，有些还只有一句话，都可以先留下。',
       chapterType: 'life_experience',
       items: items,
     );
@@ -412,7 +412,7 @@ class MemoryAlbumComposer {
       familyQuestions.addAll(questions.map(
         (question) => FamilyQuestion(
           question: question,
-          reason: '这张照片还可以成为更完整的回忆入口。',
+          reason: '多一点细节，翻到这张照片时就更容易想起当时。',
         ),
       ));
       items.add(MemoryAlbumItem(
@@ -433,9 +433,9 @@ class MemoryAlbumComposer {
 
     return MemoryAlbumChapter(
       chapterId: 'photo_memory',
-      chapterTitle: '照片里的回忆入口',
-      chapterSubtitle: '先看见画面，再慢慢想起人和事',
-      chapterIntro: '照片不只是被收进相册，也可以把人物、地点和经历轻轻串起来。',
+      chapterTitle: '照片里的那一刻',
+      chapterSubtitle: '先看见画面，再想起人和事',
+      chapterIntro: '一张照片不用说得太满，先从画面里的人、地方和小物件慢慢讲。',
       chapterType: 'photo_memory',
       items: items,
     );
@@ -479,7 +479,7 @@ class MemoryAlbumComposer {
           itemId: 'daily_food_preference',
           itemType: 'text_card',
           title: '熟悉的味道',
-          content: '家属提前记下了饮食习惯：$food。这样的细节很小，却最容易在日常陪伴里用得上。',
+          content: '饮食习惯里记着：$food。这样的小细节，常常最有家的味道。',
           relatedProfileFields: const ['food_preference'],
         ),
       );
@@ -511,7 +511,8 @@ class MemoryAlbumComposer {
         relatedPhotoIds: _photoIdsForEvent(row, photos),
       ));
     }
-    for (final photo in photos.where((photo) => _text(photo.photoTime).isNotEmpty)) {
+    for (final photo
+        in photos.where((photo) => _text(photo.photoTime).isNotEmpty)) {
       if (photo.memoryEventId != null) continue;
       entries.add(MemoryTimelineEntry(
         time: _text(photo.photoTime),
@@ -547,7 +548,8 @@ class MemoryAlbumComposer {
 
   static ProfilePhotoModel? _pickCoverPhoto(List<ProfilePhotoModel> photos) {
     if (photos.isEmpty) return null;
-    final avatar = photos.where((photo) => photo.category == ProfilePhotoCategory.avatar);
+    final avatar =
+        photos.where((photo) => photo.category == ProfilePhotoCategory.avatar);
     if (avatar.isNotEmpty) return avatar.first;
     final favorite = photos.where((photo) => photo.isFavorite);
     if (favorite.isNotEmpty) return favorite.first;
@@ -566,7 +568,7 @@ class MemoryAlbumComposer {
     if (memoryEvents.isNotEmpty) parts.add('${memoryEvents.length}段经历');
     if (familyMembers.isNotEmpty) parts.add('${familyMembers.length}位亲友');
     if (photos.isNotEmpty) parts.add('${photos.length}张照片');
-    return parts.isEmpty ? '从预录入资料慢慢整理出的回忆册' : parts.join(' · ');
+    return parts.isEmpty ? '慢慢翻看的回忆册' : parts.join(' · ');
   }
 
   static String _coverSubtitle(Map<String, dynamic>? user) {
@@ -577,7 +579,7 @@ class MemoryAlbumComposer {
     }
     if (hometown.isNotEmpty) return hometown;
     if (birth.isNotEmpty) return birth;
-    return '一本可以继续补充的回忆册';
+    return '一本慢慢翻看的回忆册';
   }
 
   static String _coverText(
@@ -586,13 +588,13 @@ class MemoryAlbumComposer {
     List<ProfilePhotoModel> photos,
   ) {
     if (coverPhoto == null) {
-      return '$elderName的回忆图鉴已经先从资料开始整理。等家属补上照片后，封面会更有熟悉的画面。';
+      return '先留一个安静的封面。等以后放上一张熟悉的照片，再从那一天慢慢讲起。';
     }
     final caption = _text(coverPhoto.caption);
     if (caption.isNotEmpty) {
       return caption;
     }
-    return '先把这张照片放在封面。它未必说明一切，但能让家人从一个真实的画面开始慢慢讲起。';
+    return '先从这张照片开始。画面不用说得太满，家里人看见了，自然会想起那一天。';
   }
 
   static String _openingText(
@@ -602,11 +604,11 @@ class MemoryAlbumComposer {
     List<ProfilePhotoModel> photos,
   ) {
     final bits = <String>[
-      '这本图鉴先把$elderName已经录入的资料收在一起。',
-      if (photos.isNotEmpty) '照片会作为入口，带出人物、地点和背后的故事。',
-      if (familyMembers.isNotEmpty) '家里人的称呼和相处提醒，会自然放进讲述里。',
-      if (memoryEvents.isNotEmpty) '重要经历会成为章节的骨架。',
-      '还不确定的地方先留白，等家属慢慢补上。',
+      '我们先从这些照片和家里记下的小事说起。',
+      if (photos.isNotEmpty) '看到一张照片，就慢慢想起当时的地方、身边的人，还有那天的心情。',
+      if (familyMembers.isNotEmpty) '家里人的名字也在这里，像平时聊天时那样轻轻提起。',
+      if (memoryEvents.isNotEmpty) '那些重要的日子，我们一段一段慢慢翻。',
+      '说不准的地方就先放着，等哪天想起来，再补上一句也好。',
     ];
     return bits.join('');
   }
@@ -618,19 +620,19 @@ class MemoryAlbumComposer {
     final hometown = _text(user?['hometown']);
     final personality = _text(user?['personality']);
     final hobbies = _text(user?['hobbies']);
-    final parts = <String>['这是$elderName的基本资料卡。'];
+    final parts = <String>['先记下这些熟悉的小信息。'];
     if (hometown.isNotEmpty) parts.add('籍贯写着$hometown。');
-    if (personality.isNotEmpty) parts.add('家属记下的性格特点是“$personality”。');
+    if (personality.isNotEmpty) parts.add('性格特点可以记作“$personality”。');
     if (hobbies.isNotEmpty) parts.add('平时喜欢的事有：$hobbies。');
-    parts.add('这些信息会在后面的照片和故事里慢慢出现。');
+    parts.add('往后翻照片、讲故事时，这些小事会慢慢用得上。');
     return parts.join('');
   }
 
   static String _endingText(String elderName, List<String> missing) {
     if (missing.isEmpty) {
-      return '$elderName的图鉴已经有了清晰的开头。后面还可以继续补照片、补地点、补家里人记得的小细节。';
+      return '今天先翻到这里。以后有新照片、新故事，再慢慢放进来。';
     }
-    return '这本图鉴先整理到这里。接下来可以继续补充：${missing.join('、')}。补得越具体，回忆册读起来就越像家人坐在身边慢慢讲。';
+    return '今天先翻到这里。还有一些地方可以慢慢想：${missing.join('、')}。不着急，想起一点，就添上一点。';
   }
 
   static String _photoTitle(ProfilePhotoModel photo) {
@@ -664,7 +666,7 @@ class MemoryAlbumComposer {
     if (caption.isNotEmpty) {
       parts.add(caption);
     } else {
-      parts.add('这张照片还没有详细说明，可以先从画面里的人、地点和当时的心情慢慢补起。');
+      parts.add('这张照片还可以再多说几句。先看看画面里的人、地点，还有当时的心情。');
     }
     if (time.isNotEmpty || location.isNotEmpty) {
       parts.add([
@@ -689,7 +691,7 @@ class MemoryAlbumComposer {
       if (title.isNotEmpty) parts.add('它也被关联到“$title”这段经历。');
     }
     if (name.isNotEmpty && hometown.isNotEmpty) {
-      parts.add('$name来自$hometown，这样的资料可以在讲照片时轻轻带出。');
+      parts.add('$name来自$hometown，讲到这张照片时，可以把这份熟悉也轻轻带上。');
     }
     return parts.join(' ');
   }
@@ -792,7 +794,7 @@ class MemoryAlbumComposer {
         'photo_id': photo.id,
         'category': _photoCategoryLabel(photo.category),
         'visible_content': _text(photo.caption).isEmpty
-            ? '家属上传的一张${_photoCategoryLabel(photo.category)}，暂无画面说明。'
+            ? '一张${_photoCategoryLabel(photo.category)}，画面细节还可以继续补充。'
             : _text(photo.caption),
         'people': _text(photo.peopleInvolved),
         'scene': _text(photo.location),
@@ -816,7 +818,9 @@ class MemoryAlbumComposer {
   static String _mainCaregiver(List<Map<String, dynamic>> familyMembers) {
     for (final row in familyMembers) {
       final notes = _text(row['notes']);
-      if (notes.contains('照护') || notes.contains('照顾') || notes.contains('主要')) {
+      if (notes.contains('照护') ||
+          notes.contains('照顾') ||
+          notes.contains('主要')) {
         return _text(row['name']);
       }
     }
@@ -913,6 +917,6 @@ class MemoryAlbumComposer {
 
   static String _text(Object? value) {
     final text = value?.toString().trim();
-    return text == null ? '' : text;
+    return text ?? '';
   }
 }

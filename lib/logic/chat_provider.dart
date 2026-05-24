@@ -11,8 +11,10 @@ import '../data/models/relation_conflict_record.dart';
 import '../data/local_db/local_database.dart';
 import '../data/repositories/chat_repository.dart';
 import '../core/voice_input/voice_input.dart';
+import 'profile_photo_reply.dart';
 import 'relation_extractor.dart';
 import 'prompt_task_router.dart';
+import '../data/models/profile_photo.dart';
 
 class ChatProvider extends ChangeNotifier {
   ChatProvider({ChatRepository? repository})
@@ -120,6 +122,27 @@ class ChatProvider extends ChangeNotifier {
     _isSending = true;
     notifyListeners();
 
+    final photoReply = await ProfilePhotoReplyResolver.resolve(
+      ownerUserId: _activeUserId,
+      userText: text,
+    );
+
+    if (photoReply.status == ProfilePhotoReplyStatus.needsClarification) {
+      try {
+        final clarify = _textMessage(
+          content: photoReply.clarifyMessage!,
+          isUser: false,
+        );
+        _messages.add(clarify);
+        await _trySaveMessage(clarify);
+        await _extractRelationsFromRecentChat(sourceMessageId: userMessage.id);
+      } finally {
+        _isSending = false;
+        notifyListeners();
+      }
+      return;
+    }
+
     try {
       final reply = await _repository
           .sendMessage(
@@ -130,6 +153,7 @@ class ChatProvider extends ChangeNotifier {
       final assistantMessage = _textMessage(content: reply, isUser: false);
       _messages.add(assistantMessage);
       await _trySaveMessage(assistantMessage);
+      await _attachProfilePhotoReplies(photoReply);
       await _extractRelationsFromRecentChat(sourceMessageId: userMessage.id);
       await _insertSupportCardIfNeeded(text);
     } catch (error) {
@@ -227,6 +251,53 @@ class ChatProvider extends ChangeNotifier {
     );
   }
 
+  ChatMessage _photoMessage(ProfilePhotoModel photo) {
+    final label = ProfilePhotoReplyResolver.describePhoto(photo);
+    return ChatMessage(
+      id: _newId('photo'),
+      content: photo.caption?.trim().isNotEmpty == true
+          ? photo.caption!.trim()
+          : '给您看这张$label',
+      isUser: false,
+      timestamp: DateTime.now(),
+      kind: ChatMessageKind.photo,
+      imagePath: photo.filePath,
+      profilePhotoId: photo.id,
+    );
+  }
+
+  Future<void> _attachProfilePhotoReplies(ProfilePhotoReplyResult photoReply) async {
+    switch (photoReply.status) {
+      case ProfilePhotoReplyStatus.notRequested:
+        return;
+      case ProfilePhotoReplyStatus.noPhotosInDb:
+        final hint = _textMessage(
+          content: '档案里还没有保存照片，您可以先在「数据预录入」里添加几张。',
+          isUser: false,
+        );
+        _messages.add(hint);
+        await _trySaveMessage(hint);
+        return;
+      case ProfilePhotoReplyStatus.noMatch:
+        final hint = _textMessage(
+          content: '我没在照片档案里找到特别对得上的。您可以说要看哪一类，比如「家庭照片」或家里人名字。',
+          isUser: false,
+        );
+        _messages.add(hint);
+        await _trySaveMessage(hint);
+        return;
+      case ProfilePhotoReplyStatus.needsClarification:
+        return;
+      case ProfilePhotoReplyStatus.matched:
+        for (final photo in photoReply.photos) {
+          final msg = _photoMessage(photo);
+          _messages.add(msg);
+          await _trySaveMessage(msg);
+        }
+        return;
+    }
+  }
+
   Future<void> _insertSupportCardIfNeeded(String latestUserText) async {
     if (_userTurnCount % 3 == 0) {
       final card = ChatMessage(
@@ -286,119 +357,21 @@ class ChatProvider extends ChangeNotifier {
         text.contains('记得');
   }
 
-  Future<String> _memoryBulletsForPrompt() async {
-    try {
-      final user = await LocalDatabase.getUserById(_activeUserId);
-      final userLabel = (user?['name'] as String?)?.trim();
-      final rows = await LocalDatabase.getNearbyPeopleForUser(_activeUserId);
-      final lines = <String>[];
-      if (userLabel != null && userLabel.isNotEmpty) {
-        lines.add('- 用户称呼：$userLabel。');
-      }
-      if (user != null) {
-        const profilePairs = <String, String>{
-          'gender': '性别',
-          'birth_year': '出生年月',
-          'hometown': '籍贯',
-          'current_address': '现居地',
-          'career': '职业经历',
-          'hobbies': '兴趣爱好',
-          'food_preference': '饮食习惯',
-          'personality': '性格',
-          'taboo': '忌讳话题',
-          'dialect': '方言',
-          'care_notes': '照护提醒',
-          'medical_notes': '健康注意事项',
-        };
-        for (final e in profilePairs.entries) {
-          final v = (user[e.key] as String?)?.trim();
-          if (v != null && v.isNotEmpty) {
-            lines.add('- 老人档案·${e.value}：$v');
-          }
-        }
-      }
-
-      final familyRows =
-          await LocalDatabase.listFamilyMembersForUser(_activeUserId);
-      if (familyRows.isEmpty) {
-        lines.add('- 家庭成员表：暂无结构化记录。');
-      } else {
-        for (final r in familyRows.take(10)) {
-          final name = (r['name'] as String?)?.trim() ?? '（姓名未填）';
-          final rel = (r['relation'] as String?)?.trim() ?? '';
-          final loc = (r['location'] as String?)?.trim() ?? '';
-          final notes = (r['notes'] as String?)?.trim() ?? '';
-          final active = ((r['is_active'] as int?) ?? 1) != 0;
-          lines.add(
-            '- 家人：${rel.isEmpty ? '亲属' : rel} $name'
-            '${active ? '' : '（已故）'}'
-            '${loc.isEmpty ? '' : '，住$loc'}'
-            '${notes.isEmpty ? '' : '；$notes'}',
-          );
-        }
-      }
-
-      final memRows = await LocalDatabase.listMemoryEventsForUser(
-        _activeUserId,
-        limit: 8,
-      );
-      if (memRows.isEmpty) {
-        lines.add('- 往事记忆库：暂无已保存事件。');
-      } else {
-        for (final r in memRows) {
-          final t = (r['title'] as String?)?.trim() ?? '';
-          final et = (r['event_time'] as String?)?.trim() ?? '';
-          if (t.isEmpty) continue;
-          lines.add(
-            '- 往事：${et.isEmpty ? '' : '$et · '}$t',
-          );
-        }
-      }
-
-      final dailyRows = await LocalDatabase.listDailyLifeRecordsForUser(
-        _activeUserId,
-        limit: 4,
-      );
-      if (dailyRows.isEmpty) {
-        lines.add('- 每日生活记录：暂无。');
-      } else {
-        for (final r in dailyRows) {
-          final d = (r['date'] as String?)?.trim() ?? '';
-          final parts = <String>[];
-          void add(String label, String col) {
-            final v = (r[col] as String?)?.trim();
-            if (v != null && v.isNotEmpty) parts.add('$label$v');
-          }
-
-          add('早', 'breakfast');
-          add('午', 'lunch');
-          add('晚', 'dinner');
-          add('活动', 'activities');
-          add('心情', 'mood');
-          if (parts.isEmpty) continue;
-          lines.add('- $d 日常：${parts.join('；')}');
-        }
-      }
-
-      if (rows.isEmpty) {
-        lines.add('- 周围人（邻居/朋友等）档案：暂无已保存条目，可引导老人慢慢介绍亲友。');
-      } else {
-        for (final r in rows) {
-          final name = (r['name'] as String?)?.trim() ?? '（未写姓名）';
-          final rel = (r['relation'] as String?)?.trim() ?? '';
-          final phone = (r['phone'] as String?)?.trim() ?? '';
-          final note = (r['note'] as String?)?.trim() ?? '';
-          lines.add(
-            '- ${rel.isEmpty ? '亲友' : rel}：$name'
-            '${phone.isEmpty ? '' : '，电话 $phone'}'
-            '${note.isEmpty ? '' : '；$note'}',
-          );
-        }
-      }
-      return lines.join('\n');
-    } catch (_) {
-      return '- （读取本地记忆资料失败，仍可陪老人聊天。）';
-    }
+  /// 老人画像 + 本地库已存档案（预录入/抽取），供重启后对话引用。
+  Future<String> _buildElderBriefWithStoredData(
+    Map<String, dynamic>? user,
+  ) async {
+    var brief = _buildElderBrief(user);
+    final storedLines =
+        await LocalDatabase.queryMemoryContextLinesForUser(_activeUserId);
+    final storedBody = storedLines
+        .where((l) => !l.contains('暂无'))
+        .map((l) => l.startsWith('- ') ? l.substring(2) : l)
+        .where((s) => s.trim().isNotEmpty)
+        .join('\n');
+    if (storedBody.isEmpty) return brief;
+    if (brief == '（暂无详细档案）') return storedBody;
+    return '$brief\n$storedBody';
   }
 
   /// 与 `server/prompts` v1.1 对齐；通过 PromptTaskRouter 决定 active_task。
@@ -416,7 +389,7 @@ class ChatProvider extends ChangeNotifier {
               ? user!['dialect']
               : '天津话',
           'sensitive_topics': _splitTaboo(user?['taboo'] as String?),
-          'elder_profile_brief': _buildElderBrief(user),
+          'elder_profile_brief': await _buildElderBriefWithStoredData(user),
         },
         'memory_snippets': route.memorySnippets,
         if (route.activeTask != null) 'active_task': route.activeTask,
@@ -1019,6 +992,8 @@ class ChatProvider extends ChangeNotifier {
         'title': message.title,
         'options': message.options,
         'cue_label': message.cueLabel,
+        'image_path': message.imagePath,
+        'profile_photo_id': message.profilePhotoId,
       }),
     });
   }
@@ -1052,6 +1027,8 @@ class ChatProvider extends ChangeNotifier {
       options: (extra['options'] as List<dynamic>? ?? const <dynamic>[])
           .map((e) => e.toString())
           .toList(),
+      imagePath: extra['image_path'] as String?,
+      profilePhotoId: extra['profile_photo_id'] as String?,
     );
   }
 

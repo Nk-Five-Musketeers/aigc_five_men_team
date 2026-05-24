@@ -475,14 +475,19 @@ class _ChatMessageView extends StatelessWidget {
   Widget build(BuildContext context) {
     final isPrompt = message.kind == ChatMessageKind.memoryPrompt ||
         message.kind == ChatMessageKind.cognitivePrompt;
+    final isPhoto = message.kind == ChatMessageKind.photo &&
+        message.imagePath != null &&
+        message.imagePath!.isNotEmpty;
 
     final Widget content = isPrompt
         ? _PromptCard(message: message, onOptionTap: onOptionTap)
-        : _MessageBubble(
-            text: message.content,
-            isUser: message.isUser,
-            isError: message.kind == ChatMessageKind.error,
-          );
+        : isPhoto
+            ? _ChatPhotoBubble(message: message)
+            : _MessageBubble(
+                text: message.content,
+                isUser: message.isUser,
+                isError: message.kind == ChatMessageKind.error,
+              );
 
     if (message.isUser) {
       return content;
@@ -604,6 +609,61 @@ class _PromptCard extends StatelessWidget {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _ChatPhotoBubble extends StatelessWidget {
+  const _ChatPhotoBubble({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final path = message.imagePath!;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 280),
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: AppTheme.surface2,
+          borderRadius: BorderRadius.circular(AppTheme.radiusBubble),
+          border: Border.all(color: AppTheme.borderHairline, width: 1),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: SizedBox(
+                height: 200,
+                width: double.infinity,
+                child: _MemoryPhotoImage(
+                  photo: ProfilePhotoModel(
+                    id: message.profilePhotoId ?? message.id,
+                    ownerUserId: '',
+                    filePath: path,
+                  ),
+                ),
+              ),
+            ),
+            if (message.content.trim().isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                message.content,
+                style: const TextStyle(
+                  color: AppTheme.text,
+                  fontSize: 19,
+                  height: 1.4,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

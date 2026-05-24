@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -9,6 +9,37 @@ import 'package:uuid/uuid.dart';
 
 import '../models/profile_photo.dart';
 import '../repositories/pre_entry_mapper.dart';
+
+/// 某用户在本地库中已持久化的业务表快照（含预录入与对话抽取结果），重启后可读。
+class StoredUserDataBundle {
+  const StoredUserDataBundle({
+    this.user,
+    this.familyMembers = const [],
+    this.memoryEvents = const [],
+    this.dailyLifeRecords = const [],
+    this.nearbyPeople = const [],
+    this.profilePhotoRows = const [],
+    this.pendingRelationConflicts = const [],
+    this.cognitiveTests = const [],
+  });
+
+  final Map<String, dynamic>? user;
+  final List<Map<String, dynamic>> familyMembers;
+  final List<Map<String, dynamic>> memoryEvents;
+  final List<Map<String, dynamic>> dailyLifeRecords;
+  final List<Map<String, dynamic>> nearbyPeople;
+  final List<Map<String, dynamic>> profilePhotoRows;
+  final List<Map<String, dynamic>> pendingRelationConflicts;
+  final List<Map<String, dynamic>> cognitiveTests;
+
+  bool get hasAnyData =>
+      user != null ||
+      familyMembers.isNotEmpty ||
+      memoryEvents.isNotEmpty ||
+      dailyLifeRecords.isNotEmpty ||
+      nearbyPeople.isNotEmpty ||
+      profilePhotoRows.isNotEmpty;
+}
 
 class LocalDatabase {
   LocalDatabase._();
@@ -820,6 +851,28 @@ class LocalDatabase {
     );
   }
 
+  /// 按主键读取单条周围人档案。
+  static Future<Map<String, dynamic>?> getNearbyPersonById(String id) async {
+    final db = await instance();
+    final rows =
+        await db.query('nearby_people', where: 'id = ?', whereArgs: [id], limit: 1);
+    if (rows.isEmpty) return null;
+    return rows.first;
+  }
+
+  /// 仅返回仍在联系中的周围人（`is_active = 1`）。
+  static Future<List<Map<String, dynamic>>> listActiveNearbyPeopleForUser(
+    String ownerUserId,
+  ) async {
+    final db = await instance();
+    return db.query(
+      'nearby_people',
+      where: 'owner_user_id = ? AND IFNULL(is_active, 1) != 0',
+      whereArgs: [ownerUserId],
+      orderBy: 'is_emergency_contact DESC, updated_at DESC',
+    );
+  }
+
   static Future<int> removeNearbyPerson(String id) async {
     final db = await instance();
     return await db.delete('nearby_people', where: 'id = ?', whereArgs: [id]);
@@ -1084,6 +1137,37 @@ class LocalDatabase {
     );
   }
 
+  /// 仅返回仍在世的家庭成员（`is_active = 1`）。
+  static Future<List<Map<String, dynamic>>> listActiveFamilyMembersForUser(
+    String ownerUserId,
+  ) async {
+    final db = await instance();
+    return db.query(
+      'family_members',
+      where: 'owner_user_id = ? AND IFNULL(is_active, 1) != 0',
+      whereArgs: [ownerUserId],
+      orderBy: 'updated_at DESC',
+    );
+  }
+
+  /// 按姓名关键词模糊查询家庭成员。
+  static Future<List<Map<String, dynamic>>> searchFamilyMembersForUser(
+    String ownerUserId, {
+    required String keyword,
+    int limit = 20,
+  }) async {
+    final db = await instance();
+    final k = '%${keyword.trim()}%';
+    if (k == '%%') return [];
+    return db.query(
+      'family_members',
+      where: 'owner_user_id = ? AND IFNULL(name, \'\') LIKE ?',
+      whereArgs: [ownerUserId, k],
+      orderBy: 'updated_at DESC',
+      limit: limit,
+    );
+  }
+
   /// 按姓名 + 关系查找家庭成员（关系为空时仅按姓名且至多一条才命中）。
   static Future<Map<String, dynamic>?> findFamilyMemberByOwnerNameRelation(
     String ownerUserId,
@@ -1173,6 +1257,25 @@ class LocalDatabase {
     );
   }
 
+  /// 按标题或描述关键词模糊查询记忆事件。
+  static Future<List<Map<String, dynamic>>> searchMemoryEventsForUser(
+    String ownerUserId, {
+    required String keyword,
+    int limit = 20,
+  }) async {
+    final db = await instance();
+    final k = '%${keyword.trim()}%';
+    if (k == '%%') return [];
+    return db.query(
+      'memory_events',
+      where:
+          'owner_user_id = ? AND (IFNULL(title, \'\') LIKE ? OR IFNULL(description, \'\') LIKE ?)',
+      whereArgs: [ownerUserId, k, k],
+      orderBy: 'importance DESC, updated_at DESC',
+      limit: limit,
+    );
+  }
+
   /// 将 [used_count] 加一并更新 [last_used]（AI 引用记忆事件时调用）。
   static Future<void> touchMemoryEventUsage(int eventId) async {
     final db = await instance();
@@ -1246,15 +1349,53 @@ class LocalDatabase {
     String ownerUserId, {
     ProfilePhotoCategory? category,
   }) async {
+    final rows = await listProfilePhotoRowsForUser(
+      ownerUserId,
+      category: category?.value,
+    );
+    return rows.map(ProfilePhotoModel.fromMap).toList();
+  }
+
+  /// 照片档案原始行（与 [listProfilePhotosForUser] 同源，便于统一查询层使用）。
+  static Future<List<Map<String, dynamic>>> listProfilePhotoRowsForUser(
+    String ownerUserId, {
+    String? category,
+    int? limit,
+  }) async {
     final db = await instance();
-    final rows = await db.query(
+    return db.query(
       'profile_photos',
       where: category == null
           ? 'owner_user_id = ?'
           : 'owner_user_id = ? AND category = ?',
       whereArgs:
-          category == null ? [ownerUserId] : [ownerUserId, category.value],
+          category == null ? [ownerUserId] : [ownerUserId, category],
       orderBy: 'is_favorite DESC, updated_at DESC',
+      limit: limit,
+    );
+  }
+
+  /// 按标签字段模糊查询照片（caption / people_involved / location / category）。
+  static Future<List<ProfilePhotoModel>> searchProfilePhotosForUser(
+    String ownerUserId, {
+    required String keyword,
+    String? category,
+    int limit = 12,
+  }) async {
+    final k = keyword.trim();
+    if (k.length < 2) return [];
+    final db = await instance();
+    final like = '%$k%';
+    final rows = await db.query(
+      'profile_photos',
+      where: category == null
+          ? 'owner_user_id = ? AND (IFNULL(caption, \'\') LIKE ? OR IFNULL(people_involved, \'\') LIKE ? OR IFNULL(location, \'\') LIKE ? OR IFNULL(category, \'\') LIKE ?)'
+          : 'owner_user_id = ? AND category = ? AND (IFNULL(caption, \'\') LIKE ? OR IFNULL(people_involved, \'\') LIKE ? OR IFNULL(location, \'\') LIKE ?)',
+      whereArgs: category == null
+          ? [ownerUserId, like, like, like, like]
+          : [ownerUserId, category, like, like, like],
+      orderBy: 'is_favorite DESC, updated_at DESC',
+      limit: limit,
     );
     return rows.map(ProfilePhotoModel.fromMap).toList();
   }
@@ -1423,6 +1564,23 @@ class LocalDatabase {
       }
     }
     return streak;
+  }
+
+  /// 列出某用户的认知测试记录（按时间倒序）。
+  static Future<List<Map<String, dynamic>>> listCognitiveTestsForUser(
+    String ownerUserId, {
+    int? limit,
+    int? offset,
+  }) async {
+    final db = await instance();
+    return db.query(
+      'cognitive_tests',
+      where: 'owner_user_id = ?',
+      whereArgs: [ownerUserId],
+      orderBy: 'created_at DESC',
+      limit: limit,
+      offset: offset,
+    );
   }
 
   /// 每位使用者对应一个主会话；默认老人账号沿用历史 id `local_conversation_home`。
@@ -1668,6 +1826,249 @@ class LocalDatabase {
       where: 'id = ?',
       whereArgs: [conversationId],
     );
+  }
+
+  // --- 统一查询：重启后读取已入库的预录入与档案数据 ---
+
+  /// 一次性读取某用户在各业务表中的已存数据（并行查询，供界面或对话上下文使用）。
+  static Future<StoredUserDataBundle> queryStoredUserDataForUser(
+    String ownerUserId, {
+    int familyLimit = 100,
+    int memoryLimit = 100,
+    int dailyLimit = 60,
+    int nearbyLimit = 100,
+    int photoLimit = 100,
+    int cognitiveLimit = 50,
+  }) async {
+    await ensureUserExists(ownerUserId);
+    final user = await getUserById(ownerUserId);
+    final family = await listFamilyMembersForUser(ownerUserId);
+    final memory = await listMemoryEventsForUser(
+      ownerUserId,
+      limit: memoryLimit,
+    );
+    final daily = await listDailyLifeRecordsForUser(
+      ownerUserId,
+      limit: dailyLimit,
+    );
+    final nearby = await getNearbyPeopleForUser(ownerUserId);
+    final photos = await listProfilePhotoRowsForUser(
+      ownerUserId,
+      limit: photoLimit,
+    );
+    final conflicts = await getPendingRelationConflicts(ownerUserId);
+    final cognitive = await listCognitiveTestsForUser(
+      ownerUserId,
+      limit: cognitiveLimit,
+    );
+
+    return StoredUserDataBundle(
+      user: user,
+      familyMembers: familyLimit >= family.length
+          ? family
+          : family.take(familyLimit).toList(),
+      memoryEvents: memory,
+      dailyLifeRecords: daily,
+      nearbyPeople: nearbyLimit >= nearby.length
+          ? nearby
+          : nearby.take(nearbyLimit).toList(),
+      profilePhotoRows: photos,
+      pendingRelationConflicts: conflicts,
+      cognitiveTests: cognitive,
+    );
+  }
+
+  /// 预录入相关表快照（users / family_members / memory_events / profile_photos / nearby_people）。
+  static Future<StoredUserDataBundle> queryPreEntryDataForUser(
+    String ownerUserId, {
+    int familyLimit = 100,
+    int memoryLimit = 100,
+    int photoLimit = 100,
+    int nearbyLimit = 100,
+  }) async {
+    final all = await queryStoredUserDataForUser(
+      ownerUserId,
+      familyLimit: familyLimit,
+      memoryLimit: memoryLimit,
+      dailyLimit: 0,
+      nearbyLimit: nearbyLimit,
+      photoLimit: photoLimit,
+      cognitiveLimit: 0,
+    );
+    return StoredUserDataBundle(
+      user: all.user,
+      familyMembers: all.familyMembers,
+      memoryEvents: all.memoryEvents,
+      nearbyPeople: all.nearbyPeople,
+      profilePhotoRows: all.profilePhotoRows,
+    );
+  }
+
+  /// 是否已有任意预录入或档案数据（用于判断重启后库内是否有可读内容）。
+  static Future<bool> hasStoredDataForUser(String ownerUserId) async {
+    final bundle = await queryStoredUserDataForUser(
+      ownerUserId,
+      familyLimit: 1,
+      memoryLimit: 1,
+      dailyLimit: 1,
+      nearbyLimit: 1,
+      photoLimit: 1,
+      cognitiveLimit: 1,
+    );
+    return bundle.hasAnyData;
+  }
+
+  /// 将已入库档案整理为可注入大模型的摘要行（重启后调用即可读到预录入内容）。
+  static Future<List<String>> queryMemoryContextLinesForUser(
+    String ownerUserId, {
+    int familyLimit = 10,
+    int memoryLimit = 8,
+    int dailyLimit = 4,
+    int nearbyLimit = 20,
+    int photoLimit = 6,
+  }) async {
+    try {
+      final user = await getUserById(ownerUserId);
+      final lines = <String>[];
+      final userLabel = (user?['name'] as String?)?.trim();
+      if (userLabel != null && userLabel.isNotEmpty) {
+        lines.add('- 用户称呼：$userLabel。');
+      }
+      if (user != null) {
+        const profilePairs = <String, String>{
+          'gender': '性别',
+          'birth_year': '出生年月',
+          'hometown': '籍贯',
+          'current_address': '现居地',
+          'career': '职业经历',
+          'hobbies': '兴趣爱好',
+          'food_preference': '饮食习惯',
+          'personality': '性格',
+          'taboo': '忌讳话题',
+          'dialect': '方言',
+          'care_notes': '照护提醒',
+          'medical_notes': '健康注意事项',
+        };
+        for (final e in profilePairs.entries) {
+          final v = (user[e.key] as String?)?.trim();
+          if (v != null && v.isNotEmpty) {
+            lines.add('- 老人档案·${e.value}：$v');
+          }
+        }
+      }
+
+      final familyRows =
+          await listFamilyMembersForUser(ownerUserId);
+      if (familyRows.isEmpty) {
+        lines.add('- 家庭成员表：暂无结构化记录。');
+      } else {
+        for (final r in familyRows.take(familyLimit)) {
+          final name = (r['name'] as String?)?.trim() ?? '（姓名未填）';
+          final rel = (r['relation'] as String?)?.trim() ?? '';
+          final loc = (r['location'] as String?)?.trim() ?? '';
+          final notes = (r['notes'] as String?)?.trim() ?? '';
+          final active = ((r['is_active'] as int?) ?? 1) != 0;
+          lines.add(
+            '- 家人：${rel.isEmpty ? '亲属' : rel} $name'
+            '${active ? '' : '（已故）'}'
+            '${loc.isEmpty ? '' : '，住$loc'}'
+            '${notes.isEmpty ? '' : '；$notes'}',
+          );
+        }
+      }
+
+      final memRows = await listMemoryEventsForUser(
+        ownerUserId,
+        limit: memoryLimit,
+      );
+      if (memRows.isEmpty) {
+        lines.add('- 往事记忆库：暂无已保存事件。');
+      } else {
+        for (final r in memRows) {
+          final t = (r['title'] as String?)?.trim() ?? '';
+          final desc = (r['description'] as String?)?.trim() ?? '';
+          final et = (r['event_time'] as String?)?.trim() ?? '';
+          if (t.isEmpty && desc.isEmpty) continue;
+          final head = et.isEmpty ? '' : '$et · ';
+          if (desc.isEmpty) {
+            lines.add('- 往事：$head$t');
+          } else {
+            lines.add('- 往事：$head$t${t.isEmpty ? '' : ' — '}$desc');
+          }
+        }
+      }
+
+      final dailyRows = await listDailyLifeRecordsForUser(
+        ownerUserId,
+        limit: dailyLimit,
+      );
+      if (dailyRows.isEmpty) {
+        lines.add('- 每日生活记录：暂无。');
+      } else {
+        for (final r in dailyRows) {
+          final d = (r['date'] as String?)?.trim() ?? '';
+          final parts = <String>[];
+          void add(String label, String col) {
+            final v = (r[col] as String?)?.trim();
+            if (v != null && v.isNotEmpty) parts.add('$label$v');
+          }
+
+          add('早', 'breakfast');
+          add('午', 'lunch');
+          add('晚', 'dinner');
+          add('活动', 'activities');
+          add('心情', 'mood');
+          if (parts.isEmpty) continue;
+          lines.add('- $d 日常：${parts.join('；')}');
+        }
+      }
+
+      final photoRows = await listProfilePhotoRowsForUser(
+        ownerUserId,
+        limit: photoLimit,
+      );
+      if (photoRows.isEmpty) {
+        lines.add('- 照片档案：暂无。');
+      } else {
+        for (final r in photoRows) {
+          final cap = (r['caption'] as String?)?.trim() ?? '';
+          final cat = (r['category'] as String?)?.trim() ?? '';
+          final when = (r['photo_time'] as String?)?.trim() ?? '';
+          final loc = (r['location'] as String?)?.trim() ?? '';
+          final people = (r['people_involved'] as String?)?.trim() ?? '';
+          final bits = <String>[];
+          if (cat.isNotEmpty) bits.add(cat);
+          if (when.isNotEmpty) bits.add(when);
+          if (loc.isNotEmpty) bits.add(loc);
+          if (people.isNotEmpty) bits.add('人物：$people');
+          if (cap.isNotEmpty) bits.add(cap);
+          if (bits.isEmpty) continue;
+          lines.add('- 照片：${bits.join('，')}');
+        }
+      }
+
+      final nearbyRows = await getNearbyPeopleForUser(ownerUserId);
+      if (nearbyRows.isEmpty) {
+        lines.add('- 周围人（邻居/朋友等）档案：暂无已保存条目。');
+      } else {
+        for (final r in nearbyRows.take(nearbyLimit)) {
+          final name = (r['name'] as String?)?.trim() ?? '（未写姓名）';
+          final rel = (r['relation'] as String?)?.trim() ?? '';
+          final phone = (r['phone'] as String?)?.trim() ?? '';
+          final note = (r['note'] as String?)?.trim() ?? '';
+          final addr = (r['address'] as String?)?.trim() ?? '';
+          lines.add(
+            '- ${rel.isEmpty ? '亲友' : rel}：$name'
+            '${phone.isEmpty ? '' : '，电话 $phone'}'
+            '${addr.isEmpty ? '' : '，地址 $addr'}'
+            '${note.isEmpty ? '' : '；$note'}',
+          );
+        }
+      }
+      return lines;
+    } catch (_) {
+      return <String>['- （读取本地记忆资料失败，仍可陪老人聊天。）'];
+    }
   }
 
   static Future<void> close() async {

@@ -3,6 +3,8 @@ enum ChatMessageKind {
   memoryPrompt,
   cognitivePrompt,
   error,
+  /// 本地 [profile_photos] 档案中的图片回复。
+  photo,
 }
 
 class ChatMessage {
@@ -15,6 +17,8 @@ class ChatMessage {
     this.title,
     this.options = const <String>[],
     this.cueLabel,
+    this.imagePath,
+    this.profilePhotoId,
   });
 
   final String id;
@@ -25,4 +29,7 @@ class ChatMessage {
   final String? title;
   final List<String> options;
   final String? cueLabel;
+  /// 本地文件路径或 Web data URL。
+  final String? imagePath;
+  final String? profilePhotoId;
 }

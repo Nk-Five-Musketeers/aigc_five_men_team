@@ -34,6 +34,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _keyboardOpen = true;
   bool _networkOnline = false;
   bool _isRecording = false;
+  bool _isRecognizing = false;
   String _speechMode = '自动识别';
 
   /// `vivo`：录完上传本地代理；`system`：系统听写。
@@ -60,9 +61,13 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _onVoiceButtonTap() async {
     final messenger = ScaffoldMessenger.maybeOf(context);
     final chat = context.read<ChatProvider>();
-    if (chat.isSending) return;
+    if (chat.isSending || _isRecognizing) return;
 
     if (_isRecording) {
+      setState(() {
+        _isRecording = false;
+        _isRecognizing = true;
+      });
       await VoiceInputService.stopFromUser();
       return;
     }
@@ -74,7 +79,6 @@ class _HomeScreenState extends State<HomeScreen> {
         engine: _speechEngine,
       );
       if (!mounted) return;
-      if (mounted) setState(() => _isRecording = false);
 
       final trimmed = text.trim();
       final userStopped = VoiceInputService.consumeEndedByUserStop();
@@ -117,7 +121,12 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     } finally {
       VoiceInputService.consumeEndedByUserStop();
-      if (mounted) setState(() => _isRecording = false);
+      if (mounted) {
+        setState(() {
+          _isRecording = false;
+          _isRecognizing = false;
+        });
+      }
     }
   }
 
@@ -212,6 +221,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     keyboardOpen: _keyboardOpen,
                     isSending: chat.isSending,
                     isRecording: _isRecording,
+                    isRecognizing: _isRecognizing,
                     onKeyboardTap: () {
                       setState(() => _keyboardOpen = !_keyboardOpen);
                     },
@@ -2025,6 +2035,7 @@ class _BottomVoiceBar extends StatelessWidget {
     required this.keyboardOpen,
     required this.isSending,
     required this.isRecording,
+    required this.isRecognizing,
     required this.onKeyboardTap,
     required this.onVoiceTap,
   });
@@ -2032,20 +2043,26 @@ class _BottomVoiceBar extends StatelessWidget {
   final bool keyboardOpen;
   final bool isSending;
   final bool isRecording;
+  final bool isRecognizing;
   final VoidCallback onKeyboardTap;
   final VoidCallback onVoiceTap;
 
   @override
   Widget build(BuildContext context) {
+    final voiceBusy = isSending || isRecognizing;
     final voiceLabel = isSending
         ? '正在回应'
-        : isRecording
-            ? '正在识别 · 点此结束发送'
-            : '点击开始说话';
+        : isRecognizing
+            ? '正在识别说话'
+            : isRecording
+                ? '正在说话 · 点此结束'
+                : '点击开始说话';
 
     final Color voiceColor;
     if (isSending) {
       voiceColor = AppTheme.textSoft;
+    } else if (isRecognizing) {
+      voiceColor = AppTheme.primary;
     } else if (isRecording) {
       voiceColor = const Color(0xFFD8624A);
     } else {
@@ -2068,7 +2085,7 @@ class _BottomVoiceBar extends StatelessWidget {
               color: Colors.transparent,
               child: InkWell(
                 borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
-                onTap: isSending ? null : onVoiceTap,
+                onTap: voiceBusy ? null : onVoiceTap,
                 child: Container(
                   decoration: BoxDecoration(
                     color: voiceColor,
@@ -2088,13 +2105,23 @@ class _BottomVoiceBar extends StatelessWidget {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(
-                          isRecording
-                              ? Icons.stop_circle_outlined
-                              : Icons.mic_rounded,
-                          color: Colors.white,
-                          size: 22,
-                        ),
+                        if (isRecognizing)
+                          const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.5,
+                              color: Colors.white,
+                            ),
+                          )
+                        else
+                          Icon(
+                            isRecording
+                                ? Icons.stop_circle_outlined
+                                : Icons.mic_rounded,
+                            color: Colors.white,
+                            size: 22,
+                          ),
                         const SizedBox(width: 8),
                         Text(
                           voiceLabel,

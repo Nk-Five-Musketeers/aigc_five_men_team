@@ -1375,7 +1375,7 @@ class LocalDatabase {
     );
   }
 
-  /// 按标签字段模糊查询照片（caption / people_involved / location / category）。
+  /// 按标签字段模糊查询照片（含各类别中文别名 → category 字段）。
   static Future<List<ProfilePhotoModel>> searchProfilePhotosForUser(
     String ownerUserId, {
     required String keyword,
@@ -1384,16 +1384,47 @@ class LocalDatabase {
   }) async {
     final k = keyword.trim();
     if (k.length < 2) return [];
+
+    final explicitCategory = category != null
+        ? ProfilePhotoCategory.fromValue(category)
+        : ProfilePhotoCategoryLabels.categoryFromUserPhrase(k);
+    if (explicitCategory != null) {
+      final rows = await listProfilePhotoRowsForUser(
+        ownerUserId,
+        category: explicitCategory.value,
+        limit: limit,
+      );
+      if (rows.isNotEmpty) {
+        return rows.map(ProfilePhotoModel.fromMap).toList();
+      }
+    }
+
+    final matchedCategories = ProfilePhotoCategoryLabels.categoriesMatchingKeyword(k);
+    if (matchedCategories.isNotEmpty) {
+      final db = await instance();
+      final placeholders =
+          List.filled(matchedCategories.length, '?').join(', ');
+      final catValues = matchedCategories.map((c) => c.value).toList();
+      final rows = await db.query(
+        'profile_photos',
+        where:
+            'owner_user_id = ? AND category IN ($placeholders)',
+        whereArgs: [ownerUserId, ...catValues],
+        orderBy: 'is_favorite DESC, updated_at DESC',
+        limit: limit,
+      );
+      if (rows.isNotEmpty) {
+        return rows.map(ProfilePhotoModel.fromMap).toList();
+      }
+    }
+
     final db = await instance();
     final like = '%$k%';
     final rows = await db.query(
       'profile_photos',
-      where: category == null
-          ? 'owner_user_id = ? AND (IFNULL(caption, \'\') LIKE ? OR IFNULL(people_involved, \'\') LIKE ? OR IFNULL(location, \'\') LIKE ? OR IFNULL(category, \'\') LIKE ?)'
-          : 'owner_user_id = ? AND category = ? AND (IFNULL(caption, \'\') LIKE ? OR IFNULL(people_involved, \'\') LIKE ? OR IFNULL(location, \'\') LIKE ?)',
-      whereArgs: category == null
-          ? [ownerUserId, like, like, like, like]
-          : [ownerUserId, category, like, like, like],
+      where:
+          'owner_user_id = ? AND (IFNULL(caption, \'\') LIKE ? OR IFNULL(people_involved, \'\') LIKE ? OR IFNULL(location, \'\') LIKE ? OR IFNULL(category, \'\') LIKE ?)',
+      whereArgs: [ownerUserId, like, like, like, like],
       orderBy: 'is_favorite DESC, updated_at DESC',
       limit: limit,
     );

@@ -148,7 +148,7 @@ class PromptTaskRouter {
       if (hasEmotionKeyword(userText)) {
         return RouteResult(
           activeTask: 'emotion_support',
-          taskParams: _buildEmotionParams(userText),
+          taskParams: await _buildEmotionParams(userText, ownerUserId),
           memorySnippets: memorySnippets,
         );
       }
@@ -188,12 +188,42 @@ class PromptTaskRouter {
   // 各任务参数构造
   // ---------------------------------------------------------------------------
 
-  static Map<String, dynamic> _buildEmotionParams(String userText) {
+  static Future<Map<String, dynamic>> _buildEmotionParams(
+    String userText,
+    String ownerUserId,
+  ) async {
+    final positiveTopics = await _queryPositiveMemories(ownerUserId);
     return <String, dynamic>{
       'emotion_type': 'sad',
       'trigger_content': userText,
       'trigger_keywords': matchedEmotionKeywords(userText),
+      'positive_topics': positiveTopics,
     };
+  }
+
+  /// 从 memory_events 查正向情绪记忆，供情绪安抚时引导转暖话题。
+  static Future<List<String>> _queryPositiveMemories(String ownerUserId) async {
+    try {
+      final db = await LocalDatabase.instance();
+      final rows = await db.rawQuery(
+        'SELECT title, description FROM memory_events '
+        'WHERE owner_user_id = ? AND (emotion IN (?,?,?) OR importance >= 4) '
+        'ORDER BY importance DESC LIMIT 4',
+        [ownerUserId, '开心', '喜悦', '满足'],
+      );
+      final snippets = <String>[];
+      for (final r in rows) {
+        final parts = <String>[];
+        final t = r['title'] as String?;
+        final d = r['description'] as String?;
+        if (t != null && t.isNotEmpty) parts.add(t);
+        if (d != null && d.isNotEmpty) parts.add(d);
+        if (parts.isNotEmpty) snippets.add(parts.join('：'));
+      }
+      return snippets;
+    } catch (_) {
+      return <String>[];
+    }
   }
 
   static Map<String, dynamic> _buildMemoryChatParams(

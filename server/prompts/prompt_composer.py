@@ -4,7 +4,8 @@
 设计要点:
 - 情绪安抚(优先级 1)的指令块放在**最后**，便于模型「就近遵循」。
 - 分模块字符预算截断，再拼接；max_total_chars 为兜底上限。
-- 支持 version 参数选择 v1.0 / v1.1，默认 v1.1。
+- 支持 version 参数选择 v1.0 / v1.1 / v1.2，默认 v1.2。
+- v1.2: memory_snippets 独立预算(300 chars)，懒加载 prompt 模块。
 
 请求体示例（与 local_chat_server 的 prompt_context 字段对齐）::
 
@@ -12,9 +13,9 @@
         "global": {
             "dialect": "天津话",
             "sensitive_topics": ["…"],
-            "memory_snippets": ["…"],
             "elder_profile_brief": "…"
         },
+        "memory_snippets": ["…"],
         "active_task": "memory_chat",
         "task": {
             "relevant_memories": [{"id": "1", "title": "…"}],
@@ -42,8 +43,37 @@ CONFIG: Dict[str, Any] = {
     "separator": "\n\n---\n\n",
 }
 
+# ---------------------------------------------------------------------------
+# 懒加载: 存 (filename, func_name) 元组, 首次 compose 时按需加载并缓存
+# ---------------------------------------------------------------------------
+_VERSION_LOADERS: Dict[str, Dict[str, Tuple[str, str]]] = {
+    "v1.0": {
+        "global": ("global_prompt_v1.0.py", "get_prompt"),
+        "daily_greeting": ("daily_greeting_v1.0.py", "get_prompt"),
+        "memory_chat": ("memory_chat_v1.0.py", "get_prompt"),
+        "cognitive_test": ("cognitive_test_v1.0.py", "get_prompt"),
+        "emotion_support": ("emotion_support_v1.0.py", "get_prompt"),
+    },
+    "v1.1": {
+        "global": ("global_prompt_v1.1.py", "get_prompt"),
+        "daily_greeting": ("daily_greeting_v1.1.py", "get_prompt"),
+        "memory_chat": ("memory_chat_v1.1.py", "get_prompt"),
+        "cognitive_test": ("cognitive_test_v1.1.py", "get_prompt"),
+        "emotion_support": ("emotion_support_v1.1.py", "get_prompt"),
+    },
+    "v1.2": {
+        "global": ("global_prompt_v1.2.py", "get_prompt"),
+        "daily_greeting": ("daily_greeting_v1.2.py", "get_prompt"),
+        "memory_chat": ("memory_chat_v1.2.py", "get_prompt"),
+        "cognitive_test": ("cognitive_test_v1.2.py", "get_prompt"),
+        "emotion_support": ("emotion_support_v1.2.py", "get_prompt"),
+    },
+}
 
-def _load(filename: str) -> Any:
+_MODULE_CACHE: Dict[Tuple[str, str], Callable[..., Dict[str, Any]]] = {}
+
+
+def _load_module(filename: str) -> Any:
     path = _DIR / filename
     mod_name = "_promptmod_" + filename.replace(".py", "").replace(".", "_")
     spec = importlib.util.spec_from_file_location(mod_name, path)
@@ -54,36 +84,16 @@ def _load(filename: str) -> Any:
     return module
 
 
-# v1.0 loaders (保留, 可通过 version="v1.0" 回退)
-_gp_v10 = _load("global_prompt_v1.0.py")
-_dg_v10 = _load("daily_greeting_v1.0.py")
-_mc_v10 = _load("memory_chat_v1.0.py")
-_ct_v10 = _load("cognitive_test_v1.0.py")
-_es_v10 = _load("emotion_support_v1.0.py")
-
-# v1.1 loaders (默认)
-_gp_v11 = _load("global_prompt_v1.1.py")
-_dg_v11 = _load("daily_greeting_v1.1.py")
-_mc_v11 = _load("memory_chat_v1.1.py")
-_ct_v11 = _load("cognitive_test_v1.1.py")
-_es_v11 = _load("emotion_support_v1.1.py")
-
-_VERSION_LOADERS: Dict[str, Dict[str, Callable[..., Dict[str, Any]]]] = {
-    "v1.0": {
-        "global": _gp_v10.get_prompt,
-        "daily_greeting": _dg_v10.get_prompt,
-        "memory_chat": _mc_v10.get_prompt,
-        "cognitive_test": _ct_v10.get_prompt,
-        "emotion_support": _es_v10.get_prompt,
-    },
-    "v1.1": {
-        "global": _gp_v11.get_prompt,
-        "daily_greeting": _dg_v11.get_prompt,
-        "memory_chat": _mc_v11.get_prompt,
-        "cognitive_test": _ct_v11.get_prompt,
-        "emotion_support": _es_v11.get_prompt,
-    },
-}
+def _get_loader(version: str, module_name: str) -> Callable[..., Dict[str, Any]]:
+    cache_key = (version, module_name)
+    if cache_key in _MODULE_CACHE:
+        return _MODULE_CACHE[cache_key]
+    entry = _VERSION_LOADERS[version][module_name]
+    filename, func_name = entry
+    mod = _load_module(filename)
+    fn = getattr(mod, func_name)
+    _MODULE_CACHE[cache_key] = fn
+    return fn
 
 
 def _truncate(s: str, max_chars: int) -> Tuple[str, bool]:
@@ -94,10 +104,11 @@ def _truncate(s: str, max_chars: int) -> Tuple[str, bool]:
 
 
 def _compose_global_block(
-    loader: Callable[..., Dict[str, Any]],
+    version: str,
     params: Dict[str, Any],
     budget: int,
 ) -> Tuple[str, Dict[str, Any], bool]:
+    loader = _get_loader(version, "global")
     g = loader(**params)
     content, truncated = _truncate(g["content"], budget)
     meta = {"module": "global", "version": g["version"], "priority": g["priority"]}
@@ -105,11 +116,12 @@ def _compose_global_block(
 
 
 def _compose_task_block(
-    loader: Callable[..., Dict[str, Any]],
+    version: str,
     task_name: str,
     params: Dict[str, Any],
     budget: int,
 ) -> Tuple[str, Dict[str, Any], bool]:
+    loader = _get_loader(version, task_name)
     part = loader(**params)
     content, truncated = _truncate(part["content"], budget)
     meta = {
@@ -120,22 +132,43 @@ def _compose_task_block(
     return content, meta, truncated
 
 
+def _compose_memory_block(
+    memory_snippets: List[str],
+    budget: int,
+) -> Tuple[str, Dict[str, Any], bool]:
+    if not memory_snippets:
+        return "", {"module": "memory", "snippets": 0}, False
+    lines: List[str] = []
+    for i, s in enumerate(memory_snippets[:3], start=1):
+        t = (s or "").strip().replace("\n", " ")
+        if len(t) > 80:
+            t = t[:79] + "…"
+        lines.append(f"{i}. {t}")
+    content = "【可自然提及的压缩记忆摘要】\n" + ("\n".join(lines) if lines else "（暂无）")
+    content, truncated = _truncate(content, budget)
+    meta = {"module": "memory", "snippets": len(lines)}
+    return content, meta, truncated
+
+
 def compose_system_prompt(
     *,
     global_params: Optional[Dict[str, Any]] = None,
     active_task: Optional[str] = None,
     task_params: Optional[Dict[str, Any]] = None,
-    version: str = "v1.1",
+    memory_snippets: Optional[List[str]] = None,
+    version: str = "v1.2",
 ) -> Dict[str, Any]:
     """
     返回可插入 OpenAI 风格 messages 的 dict: role, content。
     另附 prompt_meta（调用方可选择不入库 upstream）。
 
-    version: "v1.0" | "v1.1"，默认 v1.1。
+    version: "v1.0" | "v1.1" | "v1.2"，默认 v1.2。
     """
-    loaders = _VERSION_LOADERS.get(version)
-    if loaders is None:
-        raise ValueError(f"Unsupported prompt version: {version}. Use v1.0 or v1.1.")
+    if version not in _VERSION_LOADERS:
+        raise ValueError(
+            f"Unsupported prompt version: {version}. "
+            f"Use: {', '.join(sorted(_VERSION_LOADERS))}"
+        )
 
     gp = global_params or {}
     tk = task_params or {}
@@ -143,6 +176,7 @@ def compose_system_prompt(
     max_total: int = int(CONFIG["max_total_chars"])
     budget_global: int = int(CONFIG["budget_global"])
     budget_task: int = int(CONFIG["budget_task"])
+    budget_memory: int = int(CONFIG["budget_memory"])
 
     blocks: List[str] = []
     meta: List[Dict[str, Any]] = []
@@ -150,25 +184,30 @@ def compose_system_prompt(
 
     # 1) 全局基座 (PRIORITY=0) — 始终在最前
     g_content, g_meta, g_trunc = _compose_global_block(
-        loaders["global"], gp, budget_global
+        version, gp, budget_global
     )
     blocks.append(g_content)
     meta.append(g_meta)
     any_truncated = any_truncated or g_trunc
 
-    # 2) 任务块 — 拼接顺序:
-    #    emotion_support 放在最后（就近遵循），其余按传入 active_task
+    # 2) 任务块
     task_name = (active_task or "").strip() or None
-    if task_name and task_name in loaders:
+    if task_name and task_name in _VERSION_LOADERS[version]:
         t_content, t_meta, t_trunc = _compose_task_block(
-            loaders[task_name], task_name, tk, budget_task
+            version, task_name, tk, budget_task
         )
         blocks.append(t_content)
         meta.append(t_meta)
         any_truncated = any_truncated or t_trunc
 
-    # 3) 如果 active_task 不是 emotion_support 但有 emotion_support 的独立块需求,
-    #    这里不做自动注入——emotion_support 由 router 决定 active_task 时自带。
+    # 3) 记忆块 — 独立 budget
+    m_content, m_meta, m_trunc = _compose_memory_block(
+        memory_snippets or [], budget_memory
+    )
+    if m_content:
+        blocks.append(m_content)
+        meta.append(m_meta)
+        any_truncated = any_truncated or m_trunc
 
     merged = sep.join(blocks)
     merged, total_trunc = _truncate(merged, max_total)
@@ -183,6 +222,7 @@ def compose_system_prompt(
             "budgets": {
                 "global": budget_global,
                 "task": budget_task,
+                "memory": budget_memory,
             },
             "version": version,
         },
@@ -193,19 +233,38 @@ def compose_for_request(
     prompt_context: Dict[str, Any],
     *,
     memory_context: Optional[List[Any]] = None,
-    version: str = "v1.1",
+    version: str = "v1.2",
 ) -> Dict[str, Any]:
     """
-    从 HTTP 请求里的 prompt_context 组装；若 global 未带 memory_snippets 且提供了 memory_context，则自动映射为摘要列表。
+    从 HTTP 请求里的 prompt_context 组装 system prompt。
+
+    向后兼容:
+    - 优先读 prompt_context["memory_snippets"]（v1.2 顶层字段）
+    - 回退读 prompt_context["global"]["memory_snippets"]（旧格式）
+    - memory_context 参数作为最后兜底
     """
     g = dict(prompt_context.get("global") or {})
-    if memory_context and not g.get("memory_snippets"):
+
+    # 移除旧格式下可能存在 global 中的 memory_snippets, 避免被 global
+    # loader 误用（v1.2 global 已不再接收该参数）
+    g.pop("memory_snippets", None)
+
+    # 解析 memory_snippets: 新顶层 > 旧 global 内 > memory_context 参数
+    snippets: Optional[List[str]] = None
+    raw_top = prompt_context.get("memory_snippets")
+    if isinstance(raw_top, list):
+        snippets = [str(x) for x in raw_top if isinstance(x, str)]
+    if not snippets:
+        raw_old = (prompt_context.get("global") or {}).get("memory_snippets")
+        if isinstance(raw_old, list):
+            snippets = [str(x) for x in raw_old if isinstance(x, str)]
+    if not snippets and memory_context:
         snippets = [str(x) for x in memory_context if isinstance(x, str)]
-        if snippets:
-            g["memory_snippets"] = snippets
+
     return compose_system_prompt(
         global_params=g,
         active_task=prompt_context.get("active_task"),
         task_params=dict(prompt_context.get("task") or {}),
+        memory_snippets=snippets,
         version=version,
     )

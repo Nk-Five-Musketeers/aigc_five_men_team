@@ -416,9 +416,9 @@ class ChatProvider extends ChangeNotifier {
               ? user!['dialect']
               : '天津话',
           'sensitive_topics': _splitTaboo(user?['taboo'] as String?),
-          'memory_snippets': route.memorySnippets,
           'elder_profile_brief': _buildElderBrief(user),
         },
+        'memory_snippets': route.memorySnippets,
         if (route.activeTask != null) 'active_task': route.activeTask,
         if (route.activeTask != null) 'task': route.taskParams,
       };
@@ -428,9 +428,9 @@ class ChatProvider extends ChangeNotifier {
         'global': <String, dynamic>{
           'dialect': '天津话',
           'sensitive_topics': <String>[],
-          'memory_snippets': <String>[],
           'elder_profile_brief': '（暂无详细档案）',
         },
+        'memory_snippets': <String>[],
       };
     }
   }

@@ -1,17 +1,24 @@
 import 'dart:async';
+import 'dart:io' show File;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../config/theme.dart';
 import '../../core/voice_input/voice_input.dart';
 import '../../data/models/chat_message.dart';
+import '../../data/models/profile_photo.dart';
 import '../../data/models/relation_conflict_record.dart';
 import '../../data/local_db/local_database.dart';
 import '../../logic/chat_provider.dart';
 import 'data_preentry_screen.dart';
 
 enum _AppView { home, memory, recent, preEntry, settings }
+
+/// 应用整体宽度约束 —— 目标设备是手机，桌面预览时整个 App 居中显示
+/// 在这个宽度，与一台主流大屏手机的可视宽度接近。
+const double _kAppMaxWidth = 430;
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -117,78 +124,162 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final chat = context.watch<ChatProvider>();
+    final showChatInputs = _view == _AppView.home;
 
-    return Scaffold(
-      body: DecoratedBox(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              AppTheme.backgroundWarm,
-              AppTheme.background,
-              Color(0xFFFFF2DE),
-            ],
-          ),
+    final scaffold = Scaffold(
+      backgroundColor: AppTheme.surface0,
+      appBar: AppBar(
+        toolbarHeight: 84,
+        backgroundColor: AppTheme.surface0,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        shape: const Border(
+          bottom: BorderSide(color: AppTheme.borderHairline, width: 1),
         ),
-        child: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final compact = constraints.maxWidth < 460;
-              return Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 430),
-                  child: Container(
-                    margin: EdgeInsets.all(compact ? 0 : 16),
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
-                    decoration: _phoneDecoration(compact),
-                    child: Column(
-                      children: [
-                        _BrandHeader(
-                          activeView: _view,
-                          onSettingsTap: () => _showView(_AppView.settings),
-                          onMemoryTap: () => _showView(_AppView.memory),
-                          onRecentTap: () => _showView(_AppView.recent),
+        titleSpacing: 0,
+        centerTitle: true,
+        title: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: _kAppMaxWidth),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '拾忆',
+                        style: TextStyle(
+                          fontSize: 26,
+                          height: 1.1,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.text,
                         ),
-                        if (chat.pendingRelationConflicts.isNotEmpty) ...[
-                          const SizedBox(height: 8),
-                          _RelationConflictBanner(
-                            conflict: chat.pendingRelationConflicts.first,
-                          ),
-                          const SizedBox(height: 8),
-                        ],
-                        Expanded(
-                          child: AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 240),
-                            child: _buildView(),
-                          ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        '有我在，记忆不孤单',
+                        style: TextStyle(
+                          fontSize: 18,
+                          height: 1.2,
+                          fontWeight: FontWeight.w500,
+                          color: AppTheme.textSoft,
                         ),
-                        if (_keyboardOpen)
-                          _TypingPanel(
-                            controller: _messageController,
-                            isSending: chat.isSending,
-                            onSend: _sendTypedMessage,
-                          ),
-                        const SizedBox(height: 10),
-                        _BottomVoiceBar(
-                          keyboardOpen: _keyboardOpen,
-                          isSending: chat.isSending,
-                          isRecording: _isRecording,
-                          onKeyboardTap: () {
-                            setState(() => _keyboardOpen = !_keyboardOpen);
-                          },
-                          onVoiceTap: _onVoiceButtonTap,
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
-              );
-            },
+                _StatusBadge(
+                  online: _networkOnline,
+                  onTap: () =>
+                      setState(() => _networkOnline = !_networkOnline),
+                ),
+              ],
+            ),
           ),
         ),
       ),
+      body: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: _kAppMaxWidth),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (chat.pendingRelationConflicts.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  _RelationConflictBanner(
+                    conflict: chat.pendingRelationConflicts.first,
+                  ),
+                ],
+                const SizedBox(height: 8),
+                Expanded(child: _buildView()),
+                if (showChatInputs) ...[
+                  if (_keyboardOpen) ...[
+                    _TypingPanel(
+                      controller: _messageController,
+                      isSending: chat.isSending,
+                      onSend: _sendTypedMessage,
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  _BottomVoiceBar(
+                    keyboardOpen: _keyboardOpen,
+                    isSending: chat.isSending,
+                    isRecording: _isRecording,
+                    onKeyboardTap: () {
+                      setState(() => _keyboardOpen = !_keyboardOpen);
+                    },
+                    onVoiceTap: _onVoiceButtonTap,
+                  ),
+                  const SizedBox(height: 6),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+      bottomNavigationBar: _BottomNav(
+        currentView: _view,
+        onSelect: _onNavSelected,
+      ),
     );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final showFrame = constraints.maxWidth > 480;
+        if (!showFrame) {
+          return scaffold;
+        }
+        return ColoredBox(
+          color: AppTheme.outerBg,
+          child: SafeArea(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxWidth: _kAppMaxWidth,
+                  maxHeight: 932,
+                ),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.surface0,
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(
+                      color: AppTheme.borderHairline,
+                      width: 1,
+                    ),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: scaffold,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _onNavSelected(int index) {
+    switch (index) {
+      case 0:
+        _showView(_AppView.home);
+        break;
+      case 1:
+        _showView(_AppView.memory);
+        break;
+      case 2:
+        _showView(_AppView.recent);
+        break;
+      case 3:
+        _showView(_AppView.settings);
+        break;
+    }
   }
 
   Widget _buildView() {
@@ -198,7 +289,8 @@ class _HomeScreenState extends State<HomeScreen> {
         return const _HomeCompanionView(key: ValueKey('home'));
       case _AppView.memory:
         return _MemoryBookView(
-          key: const ValueKey('memory'),
+          key: ValueKey('memory-${chat.activeUserId}'),
+          ownerUserId: chat.activeUserId,
           onBack: () => _showView(_AppView.home),
         );
       case _AppView.recent:
@@ -228,22 +320,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  BoxDecoration _phoneDecoration(bool compact) {
-    return BoxDecoration(
-      color: AppTheme.backgroundWarm.withOpacity(0.96),
-      borderRadius: BorderRadius.circular(compact ? 0 : 34),
-      border: compact ? null : Border.all(color: AppTheme.border),
-      boxShadow: compact
-          ? const []
-          : const [
-              BoxShadow(
-                color: Color(0x22A36B32),
-                blurRadius: 42,
-                offset: Offset(0, 24),
-              ),
-            ],
-    );
-  }
 }
 
 class _HomeCompanionView extends StatelessWidget {
@@ -281,44 +357,38 @@ class _ChatCompanionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _WarmCard(
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 18),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '王阿姨，上午好',
-                      style: TextStyle(
-                        fontSize: 31,
-                        height: 1.18,
-                        fontWeight: FontWeight.w900,
-                        color: AppTheme.text,
-                      ),
-                    ),
-                    SizedBox(height: 8),
-                    Text(
-                      '我在这里陪着您，您可以直接和我说话',
-                      style: TextStyle(
-                        fontSize: 17,
-                        height: 1.45,
-                        color: AppTheme.textSoft,
-                      ),
-                    ),
-                  ],
+          const Padding(
+            padding: EdgeInsets.fromLTRB(2, 4, 2, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '王阿姨，上午好',
+                  style: TextStyle(
+                    fontSize: 30,
+                    height: 1.2,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.text,
+                  ),
                 ),
-              ),
-            ],
+                SizedBox(height: 4),
+                Text(
+                  '我在这里陪着您，您可以直接和我说话',
+                  style: TextStyle(
+                    fontSize: 21,
+                    height: 1.45,
+                    color: AppTheme.textSoft,
+                  ),
+                ),
+              ],
+            ),
           ),
-          const SizedBox(height: 14),
-          const _StatusPill(),
-          const SizedBox(height: 20),
+          if (messages.isEmpty && !isSending) const _WelcomeBubble(),
           ...messages.map(
             (message) => _ChatMessageView(
               message: message,
@@ -327,6 +397,56 @@ class _ChatCompanionCard extends StatelessWidget {
           ),
           if (isSending) const _TypingIndicator(),
         ],
+      ),
+    );
+  }
+}
+
+class _WelcomeBubble extends StatelessWidget {
+  const _WelcomeBubble();
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 320),
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: AppTheme.surface2,
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(AppTheme.radiusBubble),
+            topRight: Radius.circular(AppTheme.radiusBubble),
+            bottomLeft: Radius.circular(6),
+            bottomRight: Radius.circular(AppTheme.radiusBubble),
+          ),
+          border: Border.all(color: AppTheme.borderHairline, width: 1),
+        ),
+        child: const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '今天想聊点什么呢？',
+              style: TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.text,
+              ),
+            ),
+            SizedBox(height: 4),
+            Text(
+              '可以说说家里人、最近做的事，或者您年轻时候的故事。',
+              style: TextStyle(
+                fontSize: 20,
+                height: 1.5,
+                fontWeight: FontWeight.w400,
+                color: AppTheme.textSoft,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -343,14 +463,60 @@ class _ChatMessageView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (message.kind == ChatMessageKind.memoryPrompt ||
-        message.kind == ChatMessageKind.cognitivePrompt) {
-      return _PromptCard(message: message, onOptionTap: onOptionTap);
+    final isPrompt = message.kind == ChatMessageKind.memoryPrompt ||
+        message.kind == ChatMessageKind.cognitivePrompt;
+
+    final Widget content = isPrompt
+        ? _PromptCard(message: message, onOptionTap: onOptionTap)
+        : _MessageBubble(
+            text: message.content,
+            isUser: message.isUser,
+            isError: message.kind == ChatMessageKind.error,
+          );
+
+    if (message.isUser) {
+      return content;
     }
-    return _MessageBubble(
-      text: message.content,
-      isUser: message.isUser,
-      isError: message.kind == ChatMessageKind.error,
+
+    return Padding(
+      padding: const EdgeInsets.only(right: 24),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _LetterAvatar(letter: '拾'),
+          const SizedBox(width: 8),
+          Expanded(child: content),
+        ],
+      ),
+    );
+  }
+}
+
+class _LetterAvatar extends StatelessWidget {
+  const _LetterAvatar({required this.letter});
+
+  final String letter;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 40,
+      height: 40,
+      margin: const EdgeInsets.only(top: 2),
+      alignment: Alignment.center,
+      decoration: const BoxDecoration(
+        color: AppTheme.primary,
+        shape: BoxShape.circle,
+      ),
+      child: Text(
+        letter,
+        style: const TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.w700,
+          color: Colors.white,
+          height: 1,
+        ),
+      ),
     );
   }
 }
@@ -381,7 +547,7 @@ class _PromptCard extends StatelessWidget {
           Text(
             message.title ?? '慢慢想一想',
             style: const TextStyle(
-              fontSize: 18,
+              fontSize: 24,
               fontWeight: FontWeight.w900,
               color: AppTheme.text,
             ),
@@ -392,7 +558,7 @@ class _PromptCard extends StatelessWidget {
               message.cueLabel!,
               style: const TextStyle(
                 color: AppTheme.primaryDeep,
-                fontSize: 15,
+                fontSize: 21,
                 fontWeight: FontWeight.w800,
               ),
             ),
@@ -401,7 +567,7 @@ class _PromptCard extends StatelessWidget {
           Text(
             message.content,
             style: const TextStyle(
-              fontSize: 17,
+              fontSize: 23,
               height: 1.45,
               color: AppTheme.text,
             ),
@@ -446,33 +612,43 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final Color bgColor;
+    final Color textColor;
+    if (isError) {
+      bgColor = AppTheme.dangerSoft;
+      textColor = const Color(0xFF7A2B1A);
+    } else if (isUser) {
+      bgColor = AppTheme.primarySoft;
+      textColor = Colors.white;
+    } else {
+      bgColor = AppTheme.surface2;
+      textColor = AppTheme.text;
+    }
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
-        constraints: const BoxConstraints(maxWidth: 310, minHeight: 54),
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 14),
+        constraints: const BoxConstraints(maxWidth: 320, minHeight: 56),
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: isError
-              ? const Color(0xFFFFECE4)
-              : isUser
-                  ? AppTheme.primary
-                  : const Color(0xFFFFF3E1),
+          color: bgColor,
           borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(22),
-            topRight: const Radius.circular(22),
-            bottomLeft: Radius.circular(isUser ? 22 : 8),
-            bottomRight: Radius.circular(isUser ? 8 : 22),
+            topLeft: const Radius.circular(AppTheme.radiusBubble),
+            topRight: const Radius.circular(AppTheme.radiusBubble),
+            bottomLeft: Radius.circular(isUser ? AppTheme.radiusBubble : 6),
+            bottomRight: Radius.circular(isUser ? 6 : AppTheme.radiusBubble),
           ),
-          border: isUser ? null : Border.all(color: AppTheme.border),
+          border: (isUser || isError)
+              ? null
+              : Border.all(color: AppTheme.borderHairline, width: 1),
         ),
         child: Text(
           text,
           style: TextStyle(
-            color: isUser ? Colors.white : AppTheme.text,
-            fontSize: 19,
+            color: textColor,
+            fontSize: 21,
             height: 1.45,
-            fontWeight: FontWeight.w600,
+            fontWeight: FontWeight.w500,
           ),
         ),
       ),
@@ -497,7 +673,7 @@ class _TypingIndicator extends StatelessWidget {
           SizedBox(width: 10),
           Text(
             '拾忆正在认真听您说...',
-            style: TextStyle(color: AppTheme.textSoft, fontSize: 15),
+            style: TextStyle(color: AppTheme.textSoft, fontSize: 21),
           ),
         ],
       ),
@@ -505,171 +681,436 @@ class _TypingIndicator extends StatelessWidget {
   }
 }
 
-class _BrandHeader extends StatelessWidget {
-  const _BrandHeader({
-    required this.activeView,
-    required this.onSettingsTap,
-    required this.onMemoryTap,
-    required this.onRecentTap,
-  });
+class _StatusBadge extends StatelessWidget {
+  const _StatusBadge({required this.online, required this.onTap});
 
-  final _AppView activeView;
-  final VoidCallback onSettingsTap;
-  final VoidCallback onMemoryTap;
-  final VoidCallback onRecentTap;
+  final bool online;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
-      child: Column(
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '拾忆',
-                      style: TextStyle(
-                        fontSize: 28,
-                        height: 1.1,
-                        fontWeight: FontWeight.w900,
-                        color: AppTheme.text,
-                      ),
-                    ),
-                    SizedBox(height: 4),
-                    Text(
-                      '有我在，记忆不孤单',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: AppTheme.textSoft,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              _IconTextButton(
-                icon: Icons.tune_rounded,
-                label: '设置',
-                onTap: onSettingsTap,
-              ),
-            ],
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppTheme.radiusPill),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: online ? AppTheme.surface2 : AppTheme.surface1,
+            borderRadius: BorderRadius.circular(AppTheme.radiusPill),
+            border: Border.all(color: AppTheme.borderHairline),
           ),
-          const SizedBox(height: 16),
-          Row(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Expanded(
-                child: _NavCard(
-                  title: '回忆图鉴',
-                  subtitle: '看看珍贵的照片',
-                  selected: activeView == _AppView.memory,
-                  onTap: onMemoryTap,
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: online ? AppTheme.primary : AppTheme.textCaption,
+                  shape: BoxShape.circle,
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _NavCard(
-                  title: '最近记录',
-                  subtitle: '看看今天的点滴',
-                  selected: activeView == _AppView.recent,
-                  onTap: onRecentTap,
+              const SizedBox(width: 8),
+              Text(
+                online ? '在线' : '离线',
+                style: TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.w600,
+                  color: online ? AppTheme.primaryDeep : AppTheme.textSoft,
                 ),
               ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }
 }
 
-class _MemoryBookView extends StatelessWidget {
-  const _MemoryBookView({super.key, required this.onBack});
+class _BottomNav extends StatelessWidget {
+  const _BottomNav({required this.currentView, required this.onSelect});
 
+  final _AppView currentView;
+  final ValueChanged<int> onSelect;
+
+  int get _index {
+    switch (currentView) {
+      case _AppView.home:
+        return 0;
+      case _AppView.memory:
+        return 1;
+      case _AppView.recent:
+        return 2;
+      case _AppView.settings:
+      case _AppView.preEntry:
+        return 3;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppTheme.surface1,
+        border: Border(
+          top: BorderSide(color: AppTheme.borderHairline, width: 1),
+        ),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Center(
+          heightFactor: 1.0,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: _kAppMaxWidth),
+            child: NavigationBar(
+              backgroundColor: Colors.transparent,
+              surfaceTintColor: Colors.transparent,
+              elevation: 0,
+              selectedIndex: _index,
+              onDestinationSelected: onSelect,
+              destinations: const [
+                NavigationDestination(
+                  icon: Icon(Icons.chat_bubble_outline_rounded),
+                  selectedIcon: Icon(Icons.chat_bubble_rounded),
+                  label: '陪伴',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.photo_library_outlined),
+                  selectedIcon: Icon(Icons.photo_library_rounded),
+                  label: '回忆',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.history_rounded),
+                  label: '最近',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.tune_outlined),
+                  selectedIcon: Icon(Icons.tune_rounded),
+                  label: '设置',
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MemoryBookView extends StatefulWidget {
+  const _MemoryBookView({
+    super.key,
+    required this.ownerUserId,
+    required this.onBack,
+  });
+
+  final String ownerUserId;
   final VoidCallback onBack;
 
   @override
+  State<_MemoryBookView> createState() => _MemoryBookViewState();
+}
+
+class _MemoryBookViewState extends State<_MemoryBookView> {
+  late Future<List<ProfilePhotoModel>> _future;
+  ProfilePhotoCategory? _filter;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+  }
+
+  @override
+  void didUpdateWidget(_MemoryBookView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.ownerUserId != widget.ownerUserId) {
+      setState(() => _future = _load());
+    }
+  }
+
+  Future<List<ProfilePhotoModel>> _load() {
+    return LocalDatabase.listProfilePhotosForUser(widget.ownerUserId);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.only(bottom: 14),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _BackLine(title: '回忆图鉴', onBack: onBack),
-        const SizedBox(height: 14),
-        _WarmCard(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              _SectionTitle(
-                title: '慢慢翻看的老相册',
-                subtitle: '每一张照片，都可以陪您好好想一想',
-              ),
-              SizedBox(height: 16),
-              _MemoryPhotoCard(
-                title: '春天里的自行车',
-                year: '1986',
-                accent: AppTheme.primary,
-              ),
-              SizedBox(height: 12),
-              _MemoryPhotoCard(
-                title: '老家小院的午后',
-                year: '1983',
-                accent: AppTheme.accent,
-              ),
-            ],
+        const Padding(
+          padding: EdgeInsets.fromLTRB(4, 8, 4, 4),
+          child: Text(
+            '回忆图鉴',
+            style: TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.text,
+            ),
           ),
         ),
-        const SizedBox(height: 14),
-        _WarmCard(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              Row(
-                children: [
-                  _SoftPortrait(),
-                  SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '这是谁？',
-                          style: TextStyle(
-                            fontSize: 23,
-                            fontWeight: FontWeight.w900,
-                            color: AppTheme.text,
-                          ),
-                        ),
-                        SizedBox(height: 4),
-                        Text(
-                          '可以慢慢想，不着急',
-                          style:
-                              TextStyle(fontSize: 16, color: AppTheme.textSoft),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(child: _AnswerButton(label: '女儿')),
-                  SizedBox(width: 10),
-                  Expanded(child: _AnswerButton(label: '邻居')),
-                  SizedBox(width: 10),
-                  Expanded(child: _AnswerButton(label: '再想想')),
-                ],
-              ),
-            ],
+        const Padding(
+          padding: EdgeInsets.fromLTRB(4, 0, 4, 10),
+          child: Text(
+            '每一张照片，都可以陪您好好想一想',
+            style: TextStyle(
+              fontSize: 19,
+              fontWeight: FontWeight.w400,
+              color: AppTheme.textSoft,
+            ),
+          ),
+        ),
+        _MemoryFilterChips(
+          current: _filter,
+          onSelect: (cat) => setState(() => _filter = cat),
+        ),
+        const SizedBox(height: 10),
+        Expanded(
+          child: FutureBuilder<List<ProfilePhotoModel>>(
+            future: _future,
+            builder: (context, snapshot) {
+              if (!snapshot.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              var photos = snapshot.data!;
+              if (_filter != null) {
+                photos =
+                    photos.where((p) => p.category == _filter).toList();
+              }
+              if (photos.isEmpty) {
+                return const _EmptyHint(
+                  title: '相册暂时还是空的',
+                  hint: '到「设置 → 数据预录入 → 照片」里慢慢添加',
+                );
+              }
+              return GridView.builder(
+                padding: const EdgeInsets.only(bottom: 14),
+                gridDelegate:
+                    const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  crossAxisSpacing: 10,
+                  mainAxisSpacing: 10,
+                  childAspectRatio: 0.78,
+                ),
+                itemCount: photos.length,
+                itemBuilder: (context, index) =>
+                    _MemoryPhotoTile(photo: photos[index]),
+              );
+            },
           ),
         ),
       ],
+    );
+  }
+}
+
+class _MemoryFilterChips extends StatelessWidget {
+  const _MemoryFilterChips({required this.current, required this.onSelect});
+
+  final ProfilePhotoCategory? current;
+  final ValueChanged<ProfilePhotoCategory?> onSelect;
+
+  static const _entries = <(ProfilePhotoCategory?, String)>[
+    (null, '全部'),
+    (ProfilePhotoCategory.family, '家庭'),
+    (ProfilePhotoCategory.memory, '经历'),
+    (ProfilePhotoCategory.daily, '日常'),
+    (ProfilePhotoCategory.avatar, '头像'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 48,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        itemCount: _entries.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final (cat, label) = _entries[index];
+          final active = current == cat;
+          return Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(AppTheme.radiusPill),
+              onTap: () => onSelect(cat),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: active ? AppTheme.primary : AppTheme.surface1,
+                  borderRadius:
+                      BorderRadius.circular(AppTheme.radiusPill),
+                  border: Border.all(
+                    color: active
+                        ? AppTheme.primary
+                        : AppTheme.borderHairline,
+                    width: 1,
+                  ),
+                ),
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.w600,
+                    color: active ? Colors.white : AppTheme.text,
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _MemoryPhotoTile extends StatelessWidget {
+  const _MemoryPhotoTile({required this.photo});
+
+  final ProfilePhotoModel photo;
+
+  String get _categoryLabel {
+    return switch (photo.category) {
+      ProfilePhotoCategory.avatar => '头像',
+      ProfilePhotoCategory.family => '家庭',
+      ProfilePhotoCategory.memory => '经历',
+      ProfilePhotoCategory.daily => '日常',
+      ProfilePhotoCategory.other => '其他',
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final caption = (photo.caption ?? '').trim();
+    final subtitle = [
+      _categoryLabel,
+      if ((photo.photoTime ?? '').trim().isNotEmpty) photo.photoTime!.trim(),
+    ].join(' · ');
+
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.surface1,
+        borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+        border: Border.all(color: AppTheme.borderHairline, width: 1),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: ColoredBox(
+              color: AppTheme.surface2,
+              child: _MemoryPhotoImage(photo: photo),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        caption.isEmpty ? '未命名' : caption,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w600,
+                          color: caption.isEmpty
+                              ? AppTheme.textCaption
+                              : AppTheme.text,
+                        ),
+                      ),
+                    ),
+                    if (photo.isFavorite)
+                      const Icon(
+                        Icons.bookmark_rounded,
+                        size: 16,
+                        color: AppTheme.accent,
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w500,
+                    color: AppTheme.textCaption,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MemoryPhotoImage extends StatelessWidget {
+  const _MemoryPhotoImage({required this.photo});
+
+  final ProfilePhotoModel photo;
+
+  @override
+  Widget build(BuildContext context) {
+    final path = photo.filePath;
+    if (path.startsWith('data:image/')) {
+      return Image.network(
+        path,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const _MemoryPhotoFallback(),
+      );
+    }
+    if (kIsWeb) {
+      return const _MemoryPhotoFallback(hint: 'Web 暂不可预览');
+    }
+    return Image.file(
+      File(path),
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => const _MemoryPhotoFallback(),
+    );
+  }
+}
+
+class _MemoryPhotoFallback extends StatelessWidget {
+  const _MemoryPhotoFallback({this.hint});
+
+  final String? hint;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.image_outlined,
+            color: AppTheme.textCaption,
+            size: 28,
+          ),
+          if (hint != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              hint!,
+              style: const TextStyle(
+                fontSize: 17,
+                color: AppTheme.textCaption,
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -751,72 +1192,176 @@ class _RecentNotesViewState extends State<_RecentNotesView> {
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.only(bottom: 14),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _BackLine(title: '最近记录', onBack: widget.onBack),
-        const SizedBox(height: 14),
-        _WarmCard(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        const Padding(
+          padding: EdgeInsets.fromLTRB(4, 8, 4, 6),
+          child: Text(
+            '最近记录',
+            style: TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.text,
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Row(
             children: [
-              const _SectionTitle(
-                title: '聊天历史',
-                subtitle: '自动从本地数据库读取',
-              ),
-              const SizedBox(height: 12),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton.icon(
-                    onPressed: _confirmClearAll,
-                    icon: const Icon(Icons.delete_sweep_outlined),
-                    label: const Text('清空全部'),
-                    style: TextButton.styleFrom(
-                        foregroundColor: AppTheme.textSoft),
+              const Expanded(
+                child: Text(
+                  '自动从本地数据库读取',
+                  style: TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.w400,
+                    color: AppTheme.textSoft,
                   ),
-                  TextButton.icon(
-                    onPressed: _refresh,
-                    icon: const Icon(Icons.refresh_rounded),
-                    label: const Text('刷新'),
-                  ),
-                ],
+                ),
               ),
-              const SizedBox(height: 8),
-              FutureBuilder<List<Map<String, dynamic>>>(
-                future: _historyFuture,
-                builder: (context, snapshot) {
-                  if (!snapshot.hasData) {
-                    return const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 20),
-                      child: Center(child: CircularProgressIndicator()),
-                    );
-                  }
-                  final rows = snapshot.data!;
-                  if (rows.isEmpty) {
-                    return const Text(
-                      '当前还没有聊天历史，先去首页聊几句吧。',
-                      style: TextStyle(fontSize: 16, color: AppTheme.textSoft),
-                    );
-                  }
-                  return ListView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemCount: rows.length,
-                    itemBuilder: (context, index) {
-                      return _ChatHistoryItem(
-                        row: rows[index],
-                        onDeleted: _refresh,
-                      );
-                    },
-                  );
-                },
+              TextButton.icon(
+                onPressed: _refresh,
+                icon: const Icon(Icons.refresh_rounded, size: 18),
+                label: const Text('刷新'),
+              ),
+              TextButton.icon(
+                onPressed: _confirmClearAll,
+                icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+                label: const Text('清空'),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppTheme.textSoft,
+                ),
               ),
             ],
           ),
         ),
+        const SizedBox(height: 4),
+        Expanded(
+          child: FutureBuilder<List<Map<String, dynamic>>>(
+            future: _historyFuture,
+            builder: (context, snapshot) {
+              if (!snapshot.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              final rows = snapshot.data!;
+              if (rows.isEmpty) {
+                return const _EmptyHint(
+                  title: '还没有聊天记录',
+                  hint: '到「陪伴」里聊几句，记录会自动出现在这里',
+                );
+              }
+              final items = _flattenWithHeaders(rows);
+              return ListView.builder(
+                padding: const EdgeInsets.only(bottom: 14),
+                itemCount: items.length,
+                itemBuilder: (context, index) {
+                  final item = items[index];
+                  if (item is String) {
+                    return _RecentDateHeader(label: item);
+                  }
+                  return _ChatHistoryItem(
+                    row: item as Map<String, dynamic>,
+                    onDeleted: _refresh,
+                  );
+                },
+              );
+            },
+          ),
+        ),
       ],
+    );
+  }
+
+  List<Object> _flattenWithHeaders(List<Map<String, dynamic>> rows) {
+    final out = <Object>[];
+    String? currentGroup;
+    for (final row in rows) {
+      final timestamp =
+          DateTime.tryParse(row['timestamp'] as String? ?? '');
+      final group = _groupLabel(timestamp);
+      if (group != currentGroup) {
+        out.add(group);
+        currentGroup = group;
+      }
+      out.add(row);
+    }
+    return out;
+  }
+
+  String _groupLabel(DateTime? ts) {
+    if (ts == null) return '未知时间';
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final tsDay = DateTime(ts.year, ts.month, ts.day);
+    if (tsDay == today) return '今天';
+    if (tsDay == yesterday) return '昨天';
+    final daysAgo = today.difference(tsDay).inDays;
+    if (daysAgo < 7) return '更早 · 一周内';
+    return '更早';
+  }
+}
+
+class _RecentDateHeader extends StatelessWidget {
+  const _RecentDateHeader({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 14, 4, 6),
+      child: Text(
+        label,
+        style: const TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.w600,
+          color: AppTheme.textCaption,
+          letterSpacing: 0.4,
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyHint extends StatelessWidget {
+  const _EmptyHint({required this.title, required this.hint});
+
+  final String title;
+  final String hint;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.text,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              hint,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 20,
+                height: 1.4,
+                fontWeight: FontWeight.w400,
+                color: AppTheme.textSoft,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -865,19 +1410,73 @@ class _ChatHistoryItem extends StatelessWidget {
     final timestamp = DateTime.tryParse(row['timestamp'] as String? ?? '');
     final role = isUser ? '我' : '拾忆';
     final timeText = timestamp == null
-        ? '未知时间'
-        : '${timestamp.month.toString().padLeft(2, '0')}-${timestamp.day.toString().padLeft(2, '0')} '
-            '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
-    return _RecordItem(
-      title: '$role · $timeText',
-      description: (row['content'] as String? ?? '').trim().isEmpty
-          ? '(空消息)'
-          : (row['content'] as String),
-      trailing: IconButton(
-        tooltip: '删除',
-        onPressed: () => _confirmDelete(context),
-        icon:
-            const Icon(Icons.delete_outline_rounded, color: AppTheme.textSoft),
+        ? ''
+        : '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+    final content = (row['content'] as String? ?? '').trim();
+    final isEmpty = content.isEmpty;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
+      decoration: BoxDecoration(
+        color: AppTheme.surface1,
+        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+        border: Border.all(color: AppTheme.borderHairline, width: 1),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      role,
+                      style: TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.w700,
+                        color: isUser ? AppTheme.primaryDeep : AppTheme.text,
+                      ),
+                    ),
+                    if (timeText.isNotEmpty) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        timeText,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w500,
+                          color: AppTheme.textCaption,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  isEmpty ? '（空消息）' : content,
+                  style: TextStyle(
+                    fontSize: 20,
+                    height: 1.5,
+                    fontWeight: FontWeight.w400,
+                    color:
+                        isEmpty ? AppTheme.textCaption : AppTheme.text,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: '删除',
+            onPressed: () => _confirmDelete(context),
+            iconSize: 18,
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(
+              Icons.delete_outline_rounded,
+              color: AppTheme.textCaption,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -908,131 +1507,334 @@ class _SettingsView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListView(
-      padding: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.only(top: 8, bottom: 14),
       children: [
-        _BackLine(title: '设置', onBack: onBack),
-        const SizedBox(height: 14),
-        _WarmCard(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const _SectionTitle(
-                icon: Icons.assignment_rounded,
-                title: '数据预录入',
-                subtitle: '老人信息、亲属、重要经历与照片统一管理',
-              ),
-              const SizedBox(height: 12),
-              _SettingsRow(
-                title: '进入预录入',
-                onTap: onPreEntryTap,
-              ),
-            ],
-          ),
+        const _SettingsSectionLabel('数据'),
+        _SettingsGroup(
+          children: [
+            _SettingsTile(
+              title: '数据预录入',
+              subtitle: '老人信息、亲属、经历与照片统一管理',
+              onTap: onPreEntryTap,
+              showChevron: true,
+            ),
+          ],
         ),
-        const SizedBox(height: 14),
-        _WarmCard(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const _SectionTitle(
-                icon: Icons.mic_rounded,
-                title: '语音听写引擎',
-                subtitle: '推荐 vivo，需本机已启动本地代理；失败可改系统识别',
-              ),
-              const SizedBox(height: 16),
-              _ModeButton(
-                label: 'vivo 听写（推荐）',
-                active: speechEngine == 'vivo',
-                onTap: () => onEngineSelected('vivo'),
-              ),
-              _ModeButton(
-                label: '系统听写（备用）',
-                active: speechEngine == 'system',
-                onTap: () => onEngineSelected('system'),
-              ),
-            ],
-          ),
+        const SizedBox(height: 20),
+        const _SettingsSectionLabel('语音'),
+        _SettingsGroup(
+          children: [
+            _SettingsSubBlock(
+              title: '听写引擎',
+              helper: '推荐 vivo，本地代理需启动；失败可改系统识别',
+              children: [
+                _ModeButton(
+                  label: 'vivo 听写（推荐）',
+                  active: speechEngine == 'vivo',
+                  onTap: () => onEngineSelected('vivo'),
+                ),
+                _ModeButton(
+                  label: '系统听写（备用）',
+                  active: speechEngine == 'system',
+                  onTap: () => onEngineSelected('system'),
+                ),
+              ],
+            ),
+            const _SettingsRowDivider(),
+            _SettingsSubBlock(
+              title: '系统听写语言',
+              helper: '仅在选择「系统听写」时生效',
+              children: [
+                _ModeButton(
+                  label: '自动识别',
+                  active: speechMode == '自动识别',
+                  onTap: () => onModeSelected('自动识别'),
+                ),
+                _ModeButton(
+                  label: '普通话优先',
+                  active: speechMode == '普通话优先',
+                  onTap: () => onModeSelected('普通话优先'),
+                ),
+                _ModeButton(
+                  label: '方言优先',
+                  active: speechMode == '方言优先',
+                  onTap: () => onModeSelected('方言优先'),
+                ),
+              ],
+            ),
+          ],
         ),
-        const SizedBox(height: 14),
-        _WarmCard(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const _SectionTitle(
-                icon: Icons.record_voice_over_rounded,
-                title: '系统听写语言偏好',
-                subtitle: '仅在选择「系统听写」时生效',
-              ),
-              const SizedBox(height: 16),
-              _ModeButton(
-                label: '自动识别',
-                active: speechMode == '自动识别',
-                onTap: () => onModeSelected('自动识别'),
-              ),
-              _ModeButton(
-                label: '普通话优先',
-                active: speechMode == '普通话优先',
-                onTap: () => onModeSelected('普通话优先'),
-              ),
-              _ModeButton(
-                label: '方言优先',
-                active: speechMode == '方言优先',
-                onTap: () => onModeSelected('方言优先'),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 14),
-        _WarmCard(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const _SectionTitle(
-                icon: Icons.wifi_off_rounded,
-                title: '联网状态',
-                subtitle: '默认离线可用，需要时再联网',
-              ),
-              const SizedBox(height: 16),
-              _NetworkRow(online: networkOnline, onTap: onNetworkTap),
-            ],
-          ),
-        ),
-        const SizedBox(height: 14),
-        FutureBuilder<String>(
-          future: LocalDatabase.getDatabasePathForDebug(),
-          builder: (context, snapshot) {
-            final path = snapshot.data ?? '读取中...';
-            return _WarmCard(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const _SectionTitle(
-                    icon: Icons.storage_rounded,
-                    title: '本地数据库文件',
-                    subtitle: '文件名 bluecare.db，可用下方完整路径在资源管理器中打开',
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    LocalDatabase.storageHint(),
-                    style:
-                        const TextStyle(fontSize: 14, color: AppTheme.textSoft),
-                  ),
-                  const SizedBox(height: 8),
-                  SelectableText(
-                    path,
-                    style: const TextStyle(fontSize: 14, color: AppTheme.text),
-                  ),
-                ],
-              ),
-            );
-          },
+        const SizedBox(height: 20),
+        const _SettingsSectionLabel('系统'),
+        _SettingsGroup(
+          children: [
+            _SettingsTile(
+              title: '是否联网',
+              subtitle: '默认离线可用，需要时再联网',
+              trailing: _OnOffChip(online: networkOnline),
+              onTap: onNetworkTap,
+            ),
+            const _SettingsRowDivider(),
+            const _DatabasePathTile(),
+          ],
         ),
       ],
+    );
+  }
+}
+
+class _SettingsSectionLabel extends StatelessWidget {
+  const _SettingsSectionLabel(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 12, 4, 8),
+      child: Text(
+        label,
+        style: const TextStyle(
+          fontSize: 19,
+          fontWeight: FontWeight.w600,
+          color: AppTheme.textCaption,
+          letterSpacing: 0.4,
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsGroup extends StatelessWidget {
+  const _SettingsGroup({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: AppTheme.surface1,
+        borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+        border: Border.all(color: AppTheme.borderHairline, width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: children,
+      ),
+    );
+  }
+}
+
+class _SettingsRowDivider extends StatelessWidget {
+  const _SettingsRowDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.symmetric(horizontal: 16),
+      child: Divider(
+        height: 1,
+        thickness: 1,
+        color: AppTheme.borderHairline,
+      ),
+    );
+  }
+}
+
+class _SettingsTile extends StatelessWidget {
+  const _SettingsTile({
+    required this.title,
+    this.subtitle,
+    this.trailing,
+    this.onTap,
+    this.showChevron = false,
+  });
+
+  final String title;
+  final String? subtitle;
+  final Widget? trailing;
+  final VoidCallback? onTap;
+  final bool showChevron;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        height: 1.2,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.text,
+                      ),
+                    ),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        subtitle!,
+                        style: const TextStyle(
+                          fontSize: 19,
+                          height: 1.4,
+                          fontWeight: FontWeight.w400,
+                          color: AppTheme.textSoft,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (trailing != null) ...[
+                const SizedBox(width: 12),
+                trailing!,
+              ],
+              if (showChevron) ...[
+                const SizedBox(width: 6),
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  size: 22,
+                  color: AppTheme.textCaption,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsSubBlock extends StatelessWidget {
+  const _SettingsSubBlock({
+    required this.title,
+    required this.helper,
+    required this.children,
+  });
+
+  final String title;
+  final String helper;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.w600,
+              color: AppTheme.text,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            helper,
+            style: const TextStyle(
+              fontSize: 19,
+              height: 1.4,
+              fontWeight: FontWeight.w400,
+              color: AppTheme.textSoft,
+            ),
+          ),
+          const SizedBox(height: 10),
+          ...children,
+        ],
+      ),
+    );
+  }
+}
+
+class _OnOffChip extends StatelessWidget {
+  const _OnOffChip({required this.online});
+
+  final bool online;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: online ? AppTheme.primary : AppTheme.surface2,
+        borderRadius: BorderRadius.circular(AppTheme.radiusPill),
+        border: Border.all(
+          color: online ? AppTheme.primary : AppTheme.borderHairline,
+          width: 1,
+        ),
+      ),
+      child: Text(
+        online ? '已开启' : '已关闭',
+        style: TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.w600,
+          color: online ? Colors.white : AppTheme.primaryDeep,
+        ),
+      ),
+    );
+  }
+}
+
+class _DatabasePathTile extends StatelessWidget {
+  const _DatabasePathTile();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String>(
+      future: LocalDatabase.getDatabasePathForDebug(),
+      builder: (context, snapshot) {
+        final path = snapshot.data ?? '读取中...';
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '本地数据库文件',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.text,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                LocalDatabase.storageHint(),
+                style: const TextStyle(
+                  fontSize: 19,
+                  height: 1.4,
+                  fontWeight: FontWeight.w400,
+                  color: AppTheme.textSoft,
+                ),
+              ),
+              const SizedBox(height: 8),
+              SelectableText(
+                path,
+                style: const TextStyle(
+                  fontSize: 18,
+                  height: 1.4,
+                  color: AppTheme.text,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -1044,60 +1846,89 @@ class _RelationConflictBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _WarmCard(
-      padding: const EdgeInsets.all(14),
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: AppTheme.surface1,
+        borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+        border: Border.all(color: AppTheme.borderHairline, width: 1),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Icon(Icons.warning_amber_rounded,
-                  color: AppTheme.primaryDeep),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  '人物信息与聊天内容不一致',
+          Container(
+            width: double.infinity,
+            height: 4,
+            color: AppTheme.accent,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(
+                      Icons.warning_amber_rounded,
+                      color: AppTheme.accent,
+                      size: 20,
+                    ),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '人物信息与聊天内容不一致',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 22,
+                          color: AppTheme.text,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '${conflict.personName} · ${conflict.fieldLabel}',
                   style: const TextStyle(
-                    fontWeight: FontWeight.w900,
-                    fontSize: 17,
+                    fontSize: 19,
+                    fontWeight: FontWeight.w500,
+                    color: AppTheme.textCaption,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '原有：${conflict.oldValue ?? '（空）'}\n新提到：${conflict.newValue ?? '（空）'}',
+                  style: const TextStyle(
+                    fontSize: 20,
+                    height: 1.5,
+                    fontWeight: FontWeight.w500,
                     color: AppTheme.text,
                   ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '${conflict.personName} · ${conflict.fieldLabel}',
-            style: const TextStyle(fontSize: 15, color: AppTheme.textSoft),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            '原有：${conflict.oldValue ?? '（空）'}\n新提到：${conflict.newValue ?? '（空）'}',
-            style: const TextStyle(
-                fontSize: 15, height: 1.45, color: AppTheme.text),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => context
-                      .read<ChatProvider>()
-                      .resolveRelationConflictUi(conflict.id, false),
-                  child: const Text('保留原有'),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => context
+                            .read<ChatProvider>()
+                            .resolveRelationConflictUi(conflict.id, false),
+                        child: const Text('保留原有'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: () => context
+                            .read<ChatProvider>()
+                            .resolveRelationConflictUi(conflict.id, true),
+                        child: const Text('采用新信息'),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: FilledButton(
-                  onPressed: () => context
-                      .read<ChatProvider>()
-                      .resolveRelationConflictUi(conflict.id, true),
-                  child: const Text('采用新信息'),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ],
       ),
@@ -1118,57 +1949,68 @@ class _TypingPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _WarmCard(
-      padding: const EdgeInsets.all(10),
+    return Container(
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        color: AppTheme.surface1,
+        borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+        border: Border.all(color: AppTheme.borderHairline, width: 1),
+      ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           Expanded(
             child: TextField(
               controller: controller,
               enabled: !isSending,
               minLines: 1,
-              maxLines: 2,
+              maxLines: 4,
               textInputAction: TextInputAction.send,
               onSubmitted: (_) => onSend(),
-              style: const TextStyle(fontSize: 18, color: AppTheme.text),
-              decoration: InputDecoration(
+              style: const TextStyle(
+                fontSize: 22,
+                height: 1.4,
+                fontWeight: FontWeight.w500,
+                color: AppTheme.text,
+              ),
+              decoration: const InputDecoration(
                 hintText: '输入想说的话',
-                hintStyle: const TextStyle(color: AppTheme.textSoft),
-                filled: true,
-                fillColor: Colors.white,
+                hintStyle: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w400,
+                  color: AppTheme.textCaption,
+                ),
+                filled: false,
+                isDense: true,
                 contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(20),
-                  borderSide: const BorderSide(color: AppTheme.border),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(20),
-                  borderSide: const BorderSide(color: AppTheme.border),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(20),
-                  borderSide:
-                      const BorderSide(color: AppTheme.primary, width: 1.5),
-                ),
+                    EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                disabledBorder: InputBorder.none,
               ),
             ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 6),
           SizedBox(
-            height: 56,
+            height: 60,
             child: FilledButton(
               onPressed: isSending ? null : onSend,
               style: FilledButton.styleFrom(
                 backgroundColor: AppTheme.primary,
                 foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 18),
                 shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20)),
+                  borderRadius:
+                      BorderRadius.circular(AppTheme.radiusMedium),
+                ),
               ),
               child: Text(
                 isSending ? '等待' : '发送',
-                style:
-                    const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+                style: const TextStyle(
+                  fontSize: 21,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ),
@@ -1198,101 +2040,84 @@ class _BottomVoiceBar extends StatelessWidget {
     final voiceLabel = isSending
         ? '正在回应'
         : isRecording
-            ? '正在识别'
+            ? '正在识别 · 点此结束发送'
             : '点击开始说话';
-    final voiceSub = isSending
-        ? '请稍候'
-        : isRecording
-            ? '说完请点击结束发送'
-            : '点击后立即开始识别';
 
-    return _WarmCard(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+    final Color voiceColor;
+    if (isSending) {
+      voiceColor = AppTheme.textSoft;
+    } else if (isRecording) {
+      voiceColor = const Color(0xFFD8624A);
+    } else {
+      voiceColor = AppTheme.primary;
+    }
+
+    return SizedBox(
+      height: 88,
       child: Row(
         children: [
-          SizedBox(
-            width: 62,
-            height: 62,
-            child: TextButton(
-              onPressed: onKeyboardTap,
-              style: TextButton.styleFrom(
-                backgroundColor:
-                    keyboardOpen ? AppTheme.successSoft : Colors.white,
-                foregroundColor:
-                    keyboardOpen ? AppTheme.primaryDeep : AppTheme.textSoft,
-                textStyle:
-                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(22)),
-                side: const BorderSide(color: AppTheme.border),
-              ),
-              child: const Text('键盘'),
-            ),
+          _SideAction(
+            label: '键盘',
+            icon: Icons.keyboard_alt_outlined,
+            active: keyboardOpen,
+            onTap: onKeyboardTap,
           ),
           const SizedBox(width: 10),
           Expanded(
-            child: InkWell(
-              borderRadius: BorderRadius.circular(26),
-              onTap: isSending ? null : onVoiceTap,
-              child: Container(
-                constraints: const BoxConstraints(minHeight: 90),
-                decoration: BoxDecoration(
-                  color: isSending
-                      ? AppTheme.textSoft
-                      : isRecording
-                          ? const Color(0xFFFF6B6B)
-                          : AppTheme.primary,
-                  borderRadius: BorderRadius.circular(26),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x333FAEA3),
-                      blurRadius: 24,
-                      offset: Offset(0, 12),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+                onTap: isSending ? null : onVoiceTap,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: voiceColor,
+                    borderRadius:
+                        BorderRadius.circular(AppTheme.radiusLarge),
+                    boxShadow: isRecording
+                        ? [
+                            BoxShadow(
+                              color: voiceColor.withValues(alpha: 0.28),
+                              blurRadius: 12,
+                              offset: const Offset(0, 4),
+                            ),
+                          ]
+                        : null,
+                  ),
+                  child: Center(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          isRecording
+                              ? Icons.stop_circle_outlined
+                              : Icons.mic_rounded,
+                          color: Colors.white,
+                          size: 22,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          voiceLabel,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: 0.2,
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      voiceLabel,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      voiceSub,
-                      style: const TextStyle(
-                        color: Color(0xE6FFFFFF),
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
           ),
           const SizedBox(width: 10),
-          SizedBox(
-            width: 62,
-            height: 62,
-            child: TextButton(
-              onPressed: () {},
-              style: TextButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: AppTheme.primaryDeep,
-                textStyle:
-                    const TextStyle(fontSize: 34, fontWeight: FontWeight.w900),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(22)),
-                side: const BorderSide(color: AppTheme.border),
-              ),
-              child: const Text('+'),
-            ),
+          _SideAction(
+            label: '附件',
+            icon: Icons.add_rounded,
+            active: false,
+            onTap: () {},
           ),
         ],
       ),
@@ -1300,434 +2125,53 @@ class _BottomVoiceBar extends StatelessWidget {
   }
 }
 
-class _WarmCard extends StatelessWidget {
-  const _WarmCard({required this.child, required this.padding});
-
-  final Widget child;
-  final EdgeInsetsGeometry padding;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: padding,
-      decoration: BoxDecoration(
-        color: AppTheme.card,
-        borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: AppTheme.border),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x18A36B32),
-            blurRadius: 28,
-            offset: Offset(0, 14),
-          ),
-        ],
-      ),
-      child: child,
-    );
-  }
-}
-
-class _StatusPill extends StatelessWidget {
-  const _StatusPill();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: AppTheme.successSoft,
-        borderRadius: BorderRadius.circular(99),
-        border: Border.all(color: const Color(0xFFD4EEE9)),
-      ),
-      child: const Text(
-        '离线陪伴 · 数据守护',
-        style: TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w800,
-          color: AppTheme.primaryDeep,
-        ),
-      ),
-    );
-  }
-}
-
-class _NavCard extends StatelessWidget {
-  const _NavCard({
-    required this.title,
-    required this.subtitle,
-    required this.selected,
+class _SideAction extends StatelessWidget {
+  const _SideAction({
+    required this.label,
+    required this.icon,
+    required this.active,
     required this.onTap,
   });
 
-  final String title;
-  final String subtitle;
-  final bool selected;
+  final String label;
+  final IconData icon;
+  final bool active;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(24),
-      onTap: onTap,
-      child: Container(
-        constraints: const BoxConstraints(minHeight: 92),
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: selected ? AppTheme.successSoft : AppTheme.cardWhite,
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(
-            color: selected ? AppTheme.primary : AppTheme.border,
-            width: selected ? 1.4 : 1,
-          ),
-          boxShadow: const [
-            BoxShadow(
-              color: Color(0x14A36B32),
-              blurRadius: 18,
-              offset: Offset(0, 8),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w900,
-                color: AppTheme.text,
-              ),
-            ),
-            const SizedBox(height: 3),
-            Text(
-              subtitle,
-              style: const TextStyle(fontSize: 14, color: AppTheme.textSoft),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _BackLine extends StatelessWidget {
-  const _BackLine({required this.title, required this.onBack});
-
-  final String title;
-  final VoidCallback onBack;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        _IconTextButton(
-          label: '返回',
-          onTap: onBack,
-        ),
-        const Spacer(),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+        onTap: onTap,
+        child: Container(
+          width: 68,
+          height: 88,
           decoration: BoxDecoration(
-            color: AppTheme.accentSoft,
-            borderRadius: BorderRadius.circular(99),
+            color: active ? AppTheme.surface2 : AppTheme.surface1,
+            borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+            border: Border.all(color: AppTheme.borderHairline, width: 1),
           ),
-          child: Text(
-            title,
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w900,
-              color: AppTheme.text,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _SectionTitle extends StatelessWidget {
-  const _SectionTitle({
-    this.icon,
-    required this.title,
-    required this.subtitle,
-  });
-
-  final IconData? icon;
-  final String title;
-  final String subtitle;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (icon != null) ...[
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: AppTheme.successSoft,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Icon(icon, color: AppTheme.primaryDeep, size: 25),
-          ),
-          const SizedBox(width: 12),
-        ],
-        Expanded(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 23,
-                  height: 1.2,
-                  fontWeight: FontWeight.w900,
-                  color: AppTheme.text,
-                ),
+              Icon(
+                icon,
+                size: 22,
+                color: active ? AppTheme.primaryDeep : AppTheme.textSoft,
               ),
-              const SizedBox(height: 5),
+              const SizedBox(height: 2),
               Text(
-                subtitle,
-                style: const TextStyle(
-                  fontSize: 16,
-                  height: 1.4,
-                  color: AppTheme.textSoft,
+                label,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: active ? AppTheme.primaryDeep : AppTheme.textSoft,
                 ),
               ),
             ],
           ),
-        ),
-      ],
-    );
-  }
-}
-
-class _MemoryPhotoCard extends StatelessWidget {
-  const _MemoryPhotoCard({
-    required this.title,
-    required this.year,
-    required this.accent,
-  });
-
-  final String title;
-  final String year;
-  final Color accent;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: AppTheme.border),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 96,
-            height: 112,
-            decoration: BoxDecoration(
-              color: accent.withOpacity(0.18),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: accent.withOpacity(0.22)),
-            ),
-            child: Center(
-              child: Text(
-                year,
-                style: TextStyle(
-                  color: accent,
-                  fontSize: 22,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
-                    color: AppTheme.text,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  year,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w800,
-                    color: AppTheme.textSoft,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                const Text(
-                  '像翻开一本旧相册，慢慢看，慢慢想。',
-                  style: TextStyle(
-                      fontSize: 15, height: 1.35, color: AppTheme.textSoft),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SoftPortrait extends StatelessWidget {
-  const _SoftPortrait();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 76,
-      height: 76,
-      decoration: BoxDecoration(
-        color: AppTheme.accentSoft,
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: AppTheme.border),
-      ),
-      alignment: Alignment.center,
-      child: const Text(
-        '照片',
-        style: TextStyle(
-          color: AppTheme.primaryDeep,
-          fontSize: 18,
-          fontWeight: FontWeight.w900,
-        ),
-      ),
-    );
-  }
-}
-
-class _AnswerButton extends StatelessWidget {
-  const _AnswerButton({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 58,
-      child: TextButton(
-        onPressed: () {},
-        style: TextButton.styleFrom(
-          backgroundColor:
-              label == '再想想' ? AppTheme.accentSoft : AppTheme.successSoft,
-          foregroundColor:
-              label == '再想想' ? AppTheme.text : AppTheme.primaryDeep,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        ),
-        child: Text(
-          label,
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
-        ),
-      ),
-    );
-  }
-}
-
-class _RecordItem extends StatelessWidget {
-  const _RecordItem({
-    required this.title,
-    required this.description,
-    this.trailing,
-  });
-
-  final String title;
-  final String description;
-  final Widget? trailing;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(14, 12, 14, 13),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(22),
-          border: Border.all(color: AppTheme.border),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w900,
-                      color: AppTheme.text,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    description,
-                    style: const TextStyle(
-                      fontSize: 15,
-                      height: 1.45,
-                      color: AppTheme.textSoft,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (trailing != null) trailing!,
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SettingsRow extends StatelessWidget {
-  const _SettingsRow({required this.title, this.onTap});
-
-  final String title;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      constraints: const BoxConstraints(minHeight: 58),
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.symmetric(horizontal: 14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppTheme.border),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(20),
-        onTap: onTap,
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                  color: AppTheme.text,
-                ),
-              ),
-            ),
-            const Icon(Icons.arrow_forward_rounded,
-                color: AppTheme.primaryDeep),
-          ],
         ),
       ),
     );
@@ -1748,124 +2192,34 @@ class _ModeButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 56,
-      margin: const EdgeInsets.only(bottom: 10),
+      height: 60,
+      margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
-        color: active ? AppTheme.primary : Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: active ? AppTheme.primary : AppTheme.border),
-      ),
-      child: TextButton(
-        onPressed: onTap,
-        style: TextButton.styleFrom(
-          foregroundColor: active ? Colors.white : AppTheme.text,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        color: active ? AppTheme.primary : AppTheme.surface1,
+        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+        border: Border.all(
+          color: active ? AppTheme.primary : AppTheme.borderHairline,
+          width: 1,
         ),
-        child: Text(
-          label,
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+          onTap: onTap,
+          child: Center(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                color: active ? Colors.white : AppTheme.text,
+              ),
+            ),
+          ),
         ),
       ),
     );
   }
 }
 
-class _NetworkRow extends StatelessWidget {
-  const _NetworkRow({required this.online, required this.onTap});
-
-  final bool online;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(20),
-      onTap: onTap,
-      child: Container(
-        constraints: const BoxConstraints(minHeight: 60),
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        decoration: BoxDecoration(
-          color: online ? AppTheme.successSoft : Colors.white,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-              color: online ? const Color(0xFFD4EEE9) : AppTheme.border),
-        ),
-        child: Row(
-          children: [
-            const Expanded(
-              child: Text(
-                '是否联网',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w900,
-                  color: AppTheme.text,
-                ),
-              ),
-            ),
-            Container(
-              constraints: const BoxConstraints(minWidth: 78),
-              height: 36,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: online ? AppTheme.primary : AppTheme.accentSoft,
-                borderRadius: BorderRadius.circular(99),
-              ),
-              alignment: Alignment.center,
-              child: Text(
-                online ? '已开启' : '已关闭',
-                style: TextStyle(
-                  color: online ? Colors.white : AppTheme.text,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _IconTextButton extends StatelessWidget {
-  const _IconTextButton({
-    this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  final IconData? icon;
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final style = TextButton.styleFrom(
-      backgroundColor: AppTheme.cardWhite,
-      foregroundColor: AppTheme.text,
-      textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-      padding: const EdgeInsets.symmetric(horizontal: 14),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18),
-        side: const BorderSide(color: AppTheme.border),
-      ),
-    );
-
-    return SizedBox(
-      height: 50,
-      child: icon == null
-          ? TextButton(
-              onPressed: onTap,
-              style: style,
-              child: Text(label),
-            )
-          : TextButton.icon(
-              onPressed: onTap,
-              icon: Icon(icon, size: 20),
-              label: Text(label),
-              style: style,
-            ),
-    );
-  }
-}

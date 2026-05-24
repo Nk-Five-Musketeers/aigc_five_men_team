@@ -469,9 +469,21 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
         label: const Text('保存'),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          const _Subhead(label: '身份信息'),
           _Input(label: '姓名', controller: _name),
-          const SizedBox(height: 10),
+          const Padding(
+            padding: EdgeInsets.only(bottom: 6),
+            child: Text(
+              '性别',
+              style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w500,
+                color: AppTheme.textSoft,
+              ),
+            ),
+          ),
           Align(
             alignment: Alignment.centerLeft,
             child: SegmentedButton<String>(
@@ -486,16 +498,20 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
               },
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 14),
           _Input(label: '出生年月/年龄', controller: _birthYear),
           _Input(label: '籍贯', controller: _hometown),
           _Input(label: '现居地', controller: _currentAddress),
+          const SizedBox(height: 8),
+          const _Subhead(label: '生活偏好'),
           _Input(label: '职业经历', controller: _career, maxLines: 2),
           _Input(label: '兴趣爱好', controller: _hobbies, maxLines: 2),
           _Input(label: '饮食习惯', controller: _foodPreference, maxLines: 2),
           _Input(label: '性格特点', controller: _personality, maxLines: 2),
           _Input(label: '忌讳话题', controller: _taboo, maxLines: 2),
           _Input(label: '方言/说话习惯', controller: _dialect, maxLines: 2),
+          const SizedBox(height: 8),
+          const _Subhead(label: '照护与健康'),
           _Input(label: '照护提醒', controller: _careNotes, maxLines: 3),
           _Input(label: '健康注意事项', controller: _medicalNotes, maxLines: 3),
         ],
@@ -836,21 +852,107 @@ class _StepPicker extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        for (var i = 0; i < items.length; i++)
+        for (var i = 0; i < items.length; i++) ...[
           Expanded(
-            child: Padding(
-              padding: EdgeInsets.only(right: i == items.length - 1 ? 0 : 8),
-              child: Tooltip(
-                message: items[i].label,
-                child: IconButton.filledTonal(
-                  isSelected: current == i,
-                  onPressed: () => onChanged(i),
-                  icon: Icon(items[i].icon),
-                ),
-              ),
+            child: _StepButton(
+              index: i + 1,
+              label: items[i].label,
+              active: current == i,
+              done: current > i,
+              onTap: () => onChanged(i),
             ),
           ),
+          if (i != items.length - 1) const SizedBox(width: 8),
+        ],
       ],
+    );
+  }
+}
+
+class _StepButton extends StatelessWidget {
+  const _StepButton({
+    required this.index,
+    required this.label,
+    required this.active,
+    required this.done,
+    required this.onTap,
+  });
+
+  final int index;
+  final String label;
+  final bool active;
+  final bool done;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color bg;
+    final Color fg;
+    final Color borderColor;
+    if (active) {
+      bg = AppTheme.primary;
+      fg = Colors.white;
+      borderColor = AppTheme.primary;
+    } else if (done) {
+      bg = AppTheme.surface2;
+      fg = AppTheme.primaryDeep;
+      borderColor = AppTheme.surface2;
+    } else {
+      bg = AppTheme.surface1;
+      fg = AppTheme.textSoft;
+      borderColor = AppTheme.borderHairline;
+    }
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+        onTap: onTap,
+        child: Container(
+          height: 60,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+            border: Border.all(color: borderColor, width: 1),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 28,
+                height: 28,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: active ? Colors.white24 : Colors.transparent,
+                  border: Border.all(color: fg, width: 1.4),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '$index',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: fg,
+                    height: 1,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    color: fg,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -872,37 +974,42 @@ class _Panel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: AppTheme.card,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppTheme.border),
+        color: AppTheme.surface1,
+        borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+        border: Border.all(color: AppTheme.borderHairline, width: 1),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              CircleAvatar(
-                backgroundColor: AppTheme.successSoft,
-                foregroundColor: AppTheme.primaryDeep,
-                child: Icon(icon),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w900,
-                    color: AppTheme.text,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 16, 14, 14),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.text,
+                      height: 1.2,
+                    ),
                   ),
                 ),
-              ),
-              if (trailing != null) trailing!,
-            ],
+                if (trailing != null) trailing!,
+              ],
+            ),
           ),
-          const SizedBox(height: 14),
-          child,
+          const Divider(
+            height: 1,
+            thickness: 1,
+            color: AppTheme.borderHairline,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+            child: child,
+          ),
         ],
       ),
     );
@@ -923,11 +1030,16 @@ class _Input extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.only(bottom: 12),
       child: TextField(
         controller: controller,
         minLines: 1,
         maxLines: maxLines,
+        style: const TextStyle(
+          fontSize: 19,
+          fontWeight: FontWeight.w500,
+          color: AppTheme.text,
+        ),
         decoration: _inputDecoration(label),
       ),
     );
@@ -938,19 +1050,30 @@ InputDecoration _inputDecoration(String label) {
   return InputDecoration(
     labelText: label,
     filled: true,
-    fillColor: Colors.white,
-    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+    fillColor: AppTheme.surface1,
+    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+    labelStyle: const TextStyle(
+      fontSize: 17,
+      fontWeight: FontWeight.w500,
+      color: AppTheme.textSoft,
+    ),
+    floatingLabelStyle: const TextStyle(
+      fontSize: 15,
+      fontWeight: FontWeight.w600,
+      color: AppTheme.primaryDeep,
+    ),
     border: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(8),
-      borderSide: const BorderSide(color: AppTheme.border),
+      borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+      borderSide: const BorderSide(color: AppTheme.borderHairline, width: 1),
     ),
     enabledBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(8),
-      borderSide: const BorderSide(color: AppTheme.border),
+      borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+      borderSide: const BorderSide(color: AppTheme.borderHairline, width: 1),
     ),
     focusedBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(8),
-      borderSide: const BorderSide(color: AppTheme.primary, width: 1.4),
+      borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+      borderSide:
+          const BorderSide(color: AppTheme.primaryDeep, width: 1.6),
     ),
   );
 }
@@ -965,13 +1088,14 @@ class _Subhead extends StatelessWidget {
     return Align(
       alignment: Alignment.centerLeft,
       child: Padding(
-        padding: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.only(top: 4, bottom: 10),
         child: Text(
           label,
           style: const TextStyle(
             color: AppTheme.text,
-            fontSize: 15,
-            fontWeight: FontWeight.w900,
+            fontSize: 19,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.2,
           ),
         ),
       ),
@@ -995,18 +1119,19 @@ class _ListTileShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(10),
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppTheme.border),
+        color: AppTheme.surface1,
+        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+        border: Border.all(color: AppTheme.borderHairline, width: 1),
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (leading != null) ...[
             leading!,
-            const SizedBox(width: 10),
+            const SizedBox(width: 12),
           ],
           Expanded(
             child: Column(
@@ -1016,16 +1141,22 @@ class _ListTileShell extends StatelessWidget {
                   title,
                   style: const TextStyle(
                     color: AppTheme.text,
-                    fontWeight: FontWeight.w900,
+                    fontSize: 19,
+                    fontWeight: FontWeight.w700,
+                    height: 1.25,
                   ),
                 ),
                 if (subtitle.trim().isNotEmpty)
                   Padding(
-                    padding: const EdgeInsets.only(top: 4),
+                    padding: const EdgeInsets.only(top: 6),
                     child: Text(
                       subtitle,
                       style: const TextStyle(
-                          fontSize: 14, color: AppTheme.textSoft),
+                        fontSize: 17,
+                        height: 1.4,
+                        fontWeight: FontWeight.w400,
+                        color: AppTheme.textSoft,
+                      ),
                     ),
                   ),
               ],
@@ -1046,24 +1177,33 @@ class _BackLine extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        IconButton(
-          tooltip: '返回',
-          onPressed: onBack,
-          icon: const Icon(Icons.arrow_back_rounded),
-        ),
-        Expanded(
-          child: Text(
-            title,
-            style: const TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w900,
-              color: AppTheme.text,
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: '返回',
+            onPressed: onBack,
+            iconSize: 26,
+            style: IconButton.styleFrom(
+              foregroundColor: AppTheme.primaryDeep,
+            ),
+            icon: const Icon(Icons.arrow_back_rounded),
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              title,
+              style: const TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.text,
+                height: 1.2,
+              ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

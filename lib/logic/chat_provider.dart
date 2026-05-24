@@ -127,14 +127,10 @@ class ChatProvider extends ChangeNotifier {
       userText: text,
     );
 
-    if (photoReply.status == ProfilePhotoReplyStatus.needsClarification) {
+    // 有照片可展示：只出图，不走大模型，避免与文字回复打架。
+    if (photoReply.status == ProfilePhotoReplyStatus.matched) {
       try {
-        final clarify = _textMessage(
-          content: photoReply.clarifyMessage!,
-          isUser: false,
-        );
-        _messages.add(clarify);
-        await _trySaveMessage(clarify);
+        await _emitProfilePhotos(photoReply.photos);
         await _extractRelationsFromRecentChat(sourceMessageId: userMessage.id);
       } finally {
         _isSending = false;
@@ -144,16 +140,18 @@ class ChatProvider extends ChangeNotifier {
     }
 
     try {
+      final promptContext = await _buildPromptContextAsync(
+        photoLookupNote: _photoLookupNoteForLlm(photoReply),
+      );
       final reply = await _repository
           .sendMessage(
             history: _messages,
-            promptContext: await _buildPromptContextAsync(),
+            promptContext: promptContext,
           )
           .timeout(networkTimeout);
       final assistantMessage = _textMessage(content: reply, isUser: false);
       _messages.add(assistantMessage);
       await _trySaveMessage(assistantMessage);
-      await _attachProfilePhotoReplies(photoReply);
       await _extractRelationsFromRecentChat(sourceMessageId: userMessage.id);
       await _insertSupportCardIfNeeded(text);
     } catch (error) {
@@ -266,36 +264,24 @@ class ChatProvider extends ChangeNotifier {
     );
   }
 
-  Future<void> _attachProfilePhotoReplies(ProfilePhotoReplyResult photoReply) async {
-    switch (photoReply.status) {
-      case ProfilePhotoReplyStatus.notRequested:
-        return;
-      case ProfilePhotoReplyStatus.noPhotosInDb:
-        final hint = _textMessage(
-          content: '档案里还没有保存照片，您可以先在「数据预录入」里添加几张。',
-          isUser: false,
-        );
-        _messages.add(hint);
-        await _trySaveMessage(hint);
-        return;
-      case ProfilePhotoReplyStatus.noMatch:
-        final hint = _textMessage(
-          content: '我没在照片档案里找到特别对得上的。您可以说要看哪一类，比如「家庭照片」或家里人名字。',
-          isUser: false,
-        );
-        _messages.add(hint);
-        await _trySaveMessage(hint);
-        return;
-      case ProfilePhotoReplyStatus.needsClarification:
-        return;
-      case ProfilePhotoReplyStatus.matched:
-        for (final photo in photoReply.photos) {
-          final msg = _photoMessage(photo);
-          _messages.add(msg);
-          await _trySaveMessage(msg);
-        }
-        return;
+  Future<void> _emitProfilePhotos(List<ProfilePhotoModel> photos) async {
+    for (final photo in photos) {
+      final msg = _photoMessage(photo);
+      _messages.add(msg);
+      await _trySaveMessage(msg);
     }
+  }
+
+  /// 用户要照片但未命中本地档案时，给大模型一句内部提示（写入档案摘要末尾）。
+  String? _photoLookupNoteForLlm(ProfilePhotoReplyResult photoReply) {
+    if (!photoReply.photoRequested) return null;
+    return switch (photoReply.status) {
+      ProfilePhotoReplyStatus.noPhotosInDb =>
+        '【系统】老人想看照片，但本地尚未保存任何照片。请温和说明可让家人在「数据预录入」里添加，不要假装已经展示图片。',
+      ProfilePhotoReplyStatus.noMatch =>
+        '【系统】老人想看照片，但未匹配到具体条目。请结合已知档案自然回应，勿编造已发图。',
+      _ => null,
+    };
   }
 
   Future<void> _insertSupportCardIfNeeded(String latestUserText) async {
@@ -375,7 +361,9 @@ class ChatProvider extends ChangeNotifier {
   }
 
   /// 与 `server/prompts` v1.1 对齐；通过 PromptTaskRouter 决定 active_task。
-  Future<Map<String, dynamic>> _buildPromptContextAsync() async {
+  Future<Map<String, dynamic>> _buildPromptContextAsync({
+    String? photoLookupNote,
+  }) async {
     try {
       final user = await LocalDatabase.getUserById(_activeUserId);
       final route = await PromptTaskRouter.resolve(
@@ -383,13 +371,18 @@ class ChatProvider extends ChangeNotifier {
         ownerUserId: _activeUserId,
         recentHistory: _messages,
       );
+      var profileBrief = await _buildElderBriefWithStoredData(user);
+      final note = photoLookupNote?.trim();
+      if (note != null && note.isNotEmpty) {
+        profileBrief = '$profileBrief\n$note';
+      }
       return <String, dynamic>{
         'global': <String, dynamic>{
           'dialect': (user?['dialect'] as String?)?.trim().isNotEmpty == true
               ? user!['dialect']
               : '天津话',
           'sensitive_topics': _splitTaboo(user?['taboo'] as String?),
-          'elder_profile_brief': await _buildElderBriefWithStoredData(user),
+          'elder_profile_brief': profileBrief,
         },
         'memory_snippets': route.memorySnippets,
         if (route.activeTask != null) 'active_task': route.activeTask,

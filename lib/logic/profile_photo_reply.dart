@@ -3,10 +3,16 @@ import '../data/models/profile_photo.dart';
 
 /// 根据用户话术从 [profile_photos] 解析要展示的照片。
 enum ProfilePhotoReplyStatus {
+  /// 未表达看照片意图。
   notRequested,
+
+  /// 有看照片意图，但库里没有任何照片。
   noPhotosInDb,
+
+  /// 有看照片意图，模糊匹配后仍无法选出可展示条目。
   noMatch,
-  needsClarification,
+
+  /// 已选出可展示的照片（含模糊匹配）。
   matched,
 }
 
@@ -14,45 +20,24 @@ class ProfilePhotoReplyResult {
   const ProfilePhotoReplyResult({
     required this.status,
     this.photos = const [],
-    this.clarifyMessage,
-    this.candidateLabels = const [],
   });
 
   final ProfilePhotoReplyStatus status;
   final List<ProfilePhotoModel> photos;
-  final String? clarifyMessage;
-  final List<String> candidateLabels;
+
+  /// 用户是否在要照片（含模糊说法，如「看看」「给我看」）。
+  bool get photoRequested => status != ProfilePhotoReplyStatus.notRequested;
 }
 
 class ProfilePhotoReplyResolver {
   ProfilePhotoReplyResolver._();
 
   static final _intentPattern = RegExp(
-    r'照片|相片|图片|看一下|看看|给我看|瞧瞧|翻出|找出来|有没有.*照|照.*看看',
+    r'照片|相片|图片|相册|图|看一下|看看|给我看|瞧瞧|翻出|找出来|有没有.*照|照.*看看|想看',
   );
 
-  static const _categoryHints = <String, ProfilePhotoCategory>{
-    '头像': ProfilePhotoCategory.avatar,
-    '老人头像': ProfilePhotoCategory.avatar,
-    '家庭': ProfilePhotoCategory.family,
-    '家人': ProfilePhotoCategory.family,
-    '亲属': ProfilePhotoCategory.family,
-    '经历': ProfilePhotoCategory.memory,
-    '往事': ProfilePhotoCategory.memory,
-    '记忆': ProfilePhotoCategory.memory,
-    '日常': ProfilePhotoCategory.daily,
-    '生活照': ProfilePhotoCategory.daily,
-  };
-
-  static String categoryLabel(ProfilePhotoCategory c) {
-    return switch (c) {
-      ProfilePhotoCategory.avatar => '老人头像',
-      ProfilePhotoCategory.family => '家庭照片',
-      ProfilePhotoCategory.memory => '经历照片',
-      ProfilePhotoCategory.daily => '日常照片',
-      ProfilePhotoCategory.other => '其他照片',
-    };
-  }
+  static String categoryLabel(ProfilePhotoCategory c) =>
+      ProfilePhotoCategoryLabels.label(c);
 
   static String describePhoto(ProfilePhotoModel photo) {
     final parts = <String>[categoryLabel(photo.category)];
@@ -83,13 +68,7 @@ class ProfilePhotoReplyResolver {
       );
     }
 
-    ProfilePhotoCategory? forcedCategory;
-    for (final e in _categoryHints.entries) {
-      if (text.contains(e.key)) {
-        forcedCategory = e.value;
-        break;
-      }
-    }
+    final forcedCategory = ProfilePhotoCategoryLabels.categoryFromUserPhrase(text);
 
     final familyRows =
         await LocalDatabase.listFamilyMembersForUser(ownerUserId);
@@ -102,68 +81,112 @@ class ProfilePhotoReplyResolver {
       }
     }
 
+    final wantsSeveral = text.contains('几张') ||
+        text.contains('多') ||
+        text.contains('都') ||
+        text.contains('全部');
+
+    var pool = forcedCategory == null
+        ? all
+        : all.where((p) => p.category == forcedCategory).toList();
+
+    // 用户点了类别但库里该分类为空：在全库中按类别标签再筛一次（防历史数据 category 填错）
+    if (pool.isEmpty && forcedCategory != null) {
+      pool = all
+          .where((p) =>
+              ProfilePhotoCategoryLabels.phraseIndicatesCategory(
+                '${ProfilePhotoCategoryLabels.label(p.category)} $text',
+                forcedCategory,
+              ))
+          .toList();
+    }
+
+    if (pool.isEmpty) {
+      return const ProfilePhotoReplyResult(
+        status: ProfilePhotoReplyStatus.noMatch,
+      );
+    }
+
     final tokens = _tokensFromUserText(text);
     final scored = <_ScoredPhoto>[];
-    for (final photo in all) {
-      if (forcedCategory != null && photo.category != forcedCategory) {
-        continue;
-      }
+    for (final photo in pool) {
       final score = _scorePhoto(
         photo,
         text: text,
         tokens: tokens,
         familyNames: familyNames,
+        forcedCategory: forcedCategory,
       );
-      if (score > 0) {
-        scored.add(_ScoredPhoto(photo, score));
-      }
+      scored.add(_ScoredPhoto(photo, score));
     }
-
     scored.sort((a, b) => b.score.compareTo(a.score));
 
-    if (scored.isEmpty) {
-      // 有看照片意图但未命中标签：若仅 1～3 张则全部展示，否则请用户说明
-      final pool = forcedCategory == null
-          ? all
-          : all.where((p) => p.category == forcedCategory).toList();
-      if (pool.length == 1) {
+    final maxCount = wantsSeveral ? 3 : 1;
+    final topScore = scored.first.score;
+
+    if (topScore >= 16) {
+      final picked =
+          _pickFromScored(scored, maxCount: maxCount, minScore: topScore - 10);
+      if (picked.isNotEmpty) {
         return ProfilePhotoReplyResult(
           status: ProfilePhotoReplyStatus.matched,
-          photos: pool,
+          photos: picked,
         );
       }
-      if (pool.length <= 3 && tokens.isEmpty) {
+    }
+
+    if (topScore > 0) {
+      final picked =
+          _pickFromScored(scored, maxCount: wantsSeveral ? 3 : 2, minScore: 1);
+      if (picked.isNotEmpty) {
         return ProfilePhotoReplyResult(
           status: ProfilePhotoReplyStatus.matched,
-          photos: pool.take(3).toList(),
+          photos: picked,
         );
       }
+    }
+
+    if (pool.length <= 3) {
       return ProfilePhotoReplyResult(
-        status: ProfilePhotoReplyStatus.noMatch,
+        status: ProfilePhotoReplyStatus.matched,
+        photos: pool.take(3).toList(),
       );
     }
 
-    final top = scored.first.score;
-    final winners = scored.where((s) => s.score >= top - 8).toList();
-    if (winners.length > 1 && winners[1].score >= top - 3) {
-      final labels = winners.take(4).map((s) => describePhoto(s.photo)).toList();
-      return ProfilePhotoReplyResult(
-        status: ProfilePhotoReplyStatus.needsClarification,
-        clarifyMessage:
-            '我找到好几张可能对得上的照片，您想看哪一张？\n${labels.map((l) => '· $l').join('\n')}\n您可以说得更具体一点，比如人物名字或「家庭照片」。',
-        candidateLabels: labels,
-      );
+    if (forcedCategory != null) {
+      final inCategory = pool.where((p) => p.category == forcedCategory).toList();
+      if (inCategory.isNotEmpty) {
+        return ProfilePhotoReplyResult(
+          status: ProfilePhotoReplyStatus.matched,
+          photos: inCategory.take(wantsSeveral ? 3 : 1).toList(),
+        );
+      }
     }
 
+    final fuzzy = pool.take(wantsSeveral ? 3 : 1).toList();
     return ProfilePhotoReplyResult(
       status: ProfilePhotoReplyStatus.matched,
-      photos: winners.take(3).map((s) => s.photo).toList(),
+      photos: fuzzy,
     );
+  }
+
+  static List<ProfilePhotoModel> _pickFromScored(
+    List<_ScoredPhoto> scored, {
+    required int maxCount,
+    required int minScore,
+  }) {
+    final out = <ProfilePhotoModel>[];
+    for (final s in scored) {
+      if (s.score < minScore) break;
+      out.add(s.photo);
+      if (out.length >= maxCount) break;
+    }
+    return out;
   }
 
   static List<String> _tokensFromUserText(String text) {
     final stop = RegExp(
-      r'照片|相片|图片|看看|看一下|给我看|有没有|一张|几张|翻|找|的|了|吗|呢|啊|吧|请|想|要',
+      r'照片|相片|图片|相册|看看|看一下|给我看|有没有|一张|几张|翻|找|的|了|吗|呢|啊|吧|请|想|要|想看|头像|日常|家庭|经历|老人',
     );
     var t = text.replaceAll(stop, ' ');
     t = t.replaceAll(RegExp(r'[\s，,。！？；、]+'), ' ');
@@ -179,10 +202,12 @@ class ProfilePhotoReplyResolver {
     required String text,
     required List<String> tokens,
     required Map<int, String> familyNames,
+    ProfilePhotoCategory? forcedCategory,
   }) {
     var score = 0;
     final blob = [
       categoryLabel(photo.category),
+      photo.category.value,
       photo.caption ?? '',
       photo.peopleInvolved ?? '',
       photo.location ?? '',
@@ -191,9 +216,19 @@ class ProfilePhotoReplyResolver {
         familyNames[photo.familyMemberId!] ?? '',
     ].join(' ');
 
-    for (final hint in _categoryHints.keys) {
-      if (text.contains(hint) && blob.contains(hint)) {
-        score += 12;
+    if (forcedCategory != null && photo.category == forcedCategory) {
+      score += 48;
+    } else if (ProfilePhotoCategoryLabels.phraseIndicatesCategory(
+      text,
+      photo.category,
+    )) {
+      score += 36;
+    }
+
+    for (final alias in ProfilePhotoCategoryLabels.searchAliases[photo.category] ??
+        const []) {
+      if (alias.length >= 2 && text.contains(alias)) {
+        score += 20;
       }
     }
 
@@ -203,7 +238,7 @@ class ProfilePhotoReplyResolver {
       if (photo.peopleInvolved?.contains(token) == true) score += 14;
     }
 
-    if (photo.isFavorite) score += 2;
+    if (photo.isFavorite) score += 3;
     return score;
   }
 }

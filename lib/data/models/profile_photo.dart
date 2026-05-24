@@ -35,6 +35,113 @@ enum ProfilePhotoCategory {
   }
 }
 
+/// 预录入界面文案与用户口语 → [ProfilePhotoCategory] 的统一映射。
+abstract final class ProfilePhotoCategoryLabels {
+  ProfilePhotoCategoryLabels._();
+
+  static const Map<ProfilePhotoCategory, String> displayName = {
+    ProfilePhotoCategory.avatar: '老人头像',
+    ProfilePhotoCategory.family: '家庭照片',
+    ProfilePhotoCategory.memory: '经历照片',
+    ProfilePhotoCategory.daily: '日常照片',
+    ProfilePhotoCategory.other: '其他照片',
+  };
+
+  /// 检索别名（长词在前）；含 DB 字段值 [ProfilePhotoCategory.value]。
+  static const Map<ProfilePhotoCategory, List<String>> searchAliases = {
+    ProfilePhotoCategory.avatar: [
+      'avatar',
+      '老人头像',
+      '老人照片',
+      '老人相片',
+      '老人图片',
+      '头像照片',
+      '本人照片',
+    ],
+    ProfilePhotoCategory.family: [
+      'family',
+      '家庭照片',
+      '家庭相片',
+      '家庭图片',
+      '家人照片',
+      '亲属照片',
+    ],
+    ProfilePhotoCategory.memory: [
+      'memory',
+      '经历照片',
+      '经历相片',
+      '往事照片',
+      '记忆照片',
+      '回忆照片',
+    ],
+    ProfilePhotoCategory.daily: [
+      'daily',
+      '日常照片',
+      '日常相片',
+      '生活照片',
+      '生活照',
+      '生活图片',
+    ],
+    ProfilePhotoCategory.other: [
+      'other',
+      '其他照片',
+      '其它照片',
+    ],
+  };
+
+  static String label(ProfilePhotoCategory category) =>
+      displayName[category] ?? '照片';
+
+  static List<(String alias, ProfilePhotoCategory category)> _aliasEntries() {
+    final out = <(String, ProfilePhotoCategory)>[];
+    for (final e in searchAliases.entries) {
+      for (final alias in e.value) {
+        if (alias.trim().length >= 2) {
+          out.add((alias.trim(), e.key));
+        }
+      }
+    }
+    out.sort((a, b) => b.$1.length.compareTo(a.$1.length));
+    return out;
+  }
+
+  /// 从用户整句或关键词解析照片类别（优先匹配更长别名，避免「家庭」误伤「老人家庭」）。
+  static ProfilePhotoCategory? categoryFromUserPhrase(String text) {
+    final t = text.trim();
+    if (t.isEmpty) return null;
+    for (final entry in _aliasEntries()) {
+      if (t.contains(entry.$1)) return entry.$2;
+    }
+    return null;
+  }
+
+  /// 关键词是否可能指向某类别（用于 SQL 辅助筛选）。
+  static List<ProfilePhotoCategory> categoriesMatchingKeyword(String keyword) {
+    final t = keyword.trim();
+    if (t.isEmpty) return const [];
+    final hits = <ProfilePhotoCategory>{};
+    final direct = categoryFromUserPhrase(t);
+    if (direct != null) hits.add(direct);
+    for (final entry in _aliasEntries()) {
+      if (t.contains(entry.$1) || entry.$1.contains(t)) {
+        hits.add(entry.$2);
+      }
+    }
+    return hits.toList();
+  }
+
+  static bool phraseIndicatesCategory(
+    String text,
+    ProfilePhotoCategory category,
+  ) {
+    if (categoryFromUserPhrase(text) == category) return true;
+    for (final alias in searchAliases[category] ?? const []) {
+      if (alias.length >= 2 && text.contains(alias)) return true;
+    }
+    return false;
+  }
+}
+
 class ProfilePhotoModel {
   ProfilePhotoModel({
     required this.id,

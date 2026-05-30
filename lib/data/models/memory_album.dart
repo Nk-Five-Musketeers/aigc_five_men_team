@@ -11,6 +11,7 @@ class MemoryAlbum {
     required this.ending,
     required this.familyQuestions,
     required this.notes,
+    required this.narration,
   });
 
   final String albumId;
@@ -24,11 +25,31 @@ class MemoryAlbum {
   final AlbumText ending;
   final List<FamilyQuestion> familyQuestions;
   final AlbumNotes notes;
+  final MemoryAlbumNarration narration;
 
   bool get hasContent {
     return elderProfileCard.profileItems.isNotEmpty ||
         chapters.any((chapter) => chapter.items.isNotEmpty) ||
         timeline.isNotEmpty;
+  }
+
+  MemoryAlbum copyWith({
+    MemoryAlbumNarration? narration,
+  }) {
+    return MemoryAlbum(
+      albumId: albumId,
+      albumTitle: albumTitle,
+      albumSubtitle: albumSubtitle,
+      cover: cover,
+      opening: opening,
+      elderProfileCard: elderProfileCard,
+      chapters: chapters,
+      timeline: timeline,
+      ending: ending,
+      familyQuestions: familyQuestions,
+      notes: notes,
+      narration: narration ?? this.narration,
+    );
   }
 
   Map<String, dynamic> toJson() => {
@@ -44,6 +65,52 @@ class MemoryAlbum {
         'family_questions':
             familyQuestions.map((question) => question.toJson()).toList(),
         'notes': notes.toJson(),
+        'narration': narration.toJson(),
+      };
+}
+
+class MemoryAlbumNarration {
+  const MemoryAlbumNarration({
+    required this.segments,
+  });
+
+  final List<NarrationSegment> segments;
+
+  Map<String, dynamic> toJson() => {
+        'segments': segments.map((segment) => segment.toJson()).toList(),
+      };
+}
+
+class NarrationSegment {
+  const NarrationSegment({
+    required this.segmentId,
+    required this.chapterId,
+    required this.chapterTitle,
+    required this.itemId,
+    required this.itemTitle,
+    required this.sentenceIndex,
+    required this.text,
+    required this.pageIndex,
+  });
+
+  final String segmentId;
+  final String chapterId;
+  final String chapterTitle;
+  final String itemId;
+  final String itemTitle;
+  final int sentenceIndex;
+  final String text;
+  final int pageIndex;
+
+  Map<String, dynamic> toJson() => {
+        'segment_id': segmentId,
+        'chapter_id': chapterId,
+        'chapter_title': chapterTitle,
+        'item_id': itemId,
+        'item_title': itemTitle,
+        'sentence_index': sentenceIndex,
+        'text': text,
+        'page_index': pageIndex,
       };
 }
 

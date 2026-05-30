@@ -3,9 +3,11 @@ import 'dart:io' show File;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 
 import '../../config/theme.dart';
+import '../../core/narration/narration_player.dart';
 import '../../core/voice_input/voice_input.dart';
 import '../../data/models/chat_message.dart';
 import '../../data/models/memory_album.dart';
@@ -192,8 +194,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 _StatusBadge(
                   online: _networkOnline,
-                  onTap: () =>
-                      setState(() => _networkOnline = !_networkOnline),
+                  onTap: () => setState(() => _networkOnline = !_networkOnline),
                 ),
               ],
             ),
@@ -222,8 +223,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   Expanded(
                     child: GestureDetector(
                       behavior: HitTestBehavior.translucent,
-                      onTap: () =>
-                          _dismissKeyboardInput(closeInputPanel: true),
+                      onTap: () => _dismissKeyboardInput(closeInputPanel: true),
                       child: _buildView(),
                     ),
                   ),
@@ -349,7 +349,6 @@ class _HomeScreenState extends State<HomeScreen> {
         );
     }
   }
-
 }
 
 class _HomeCompanionView extends StatefulWidget {
@@ -1020,10 +1019,16 @@ class _MemoryBookView extends StatefulWidget {
 class _MemoryBookViewState extends State<_MemoryBookView> {
   late Future<MemoryAlbumDraft> _future;
   final MemoryAlbumRepository _repository = MemoryAlbumRepository();
+  late final NarrationPlayer _narrationPlayer;
+  final ScrollController _scrollController = ScrollController();
+  final Map<String, GlobalKey> _segmentKeys = <String, GlobalKey>{};
+  final Map<String, GlobalKey> _itemKeys = <String, GlobalKey>{};
+  DateTime? _lastUserScrollAt;
 
   @override
   void initState() {
     super.initState();
+    _narrationPlayer = NarrationPlayer()..addListener(_onNarrationChanged);
     _future = _load();
   }
 
@@ -1035,8 +1040,22 @@ class _MemoryBookViewState extends State<_MemoryBookView> {
     }
   }
 
-  Future<MemoryAlbumDraft> _load() {
-    return _repository.buildForUser(widget.ownerUserId);
+  @override
+  void dispose() {
+    _narrationPlayer.removeListener(_onNarrationChanged);
+    _narrationPlayer.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<MemoryAlbumDraft> _load() async {
+    final draft = await _repository.buildForUser(widget.ownerUserId);
+    if (mounted) {
+      _segmentKeys.clear();
+      _itemKeys.clear();
+      _narrationPlayer.setSegments(draft.album.narration.segments);
+    }
+    return draft;
   }
 
   @override
@@ -1063,27 +1082,75 @@ class _MemoryBookViewState extends State<_MemoryBookView> {
             ],
           );
         }
-        return ListView(
-          padding: const EdgeInsets.only(bottom: 14),
+        return Column(
           children: [
-            _MemoryAlbumHeader(onRefresh: _refresh),
-            _AlbumCoverPanel(
-              album: album,
-              photo: photosById[album.cover.recommendedCoverPhotoId],
-            ),
-            _AlbumTextPanel(text: album.opening),
-            _AlbumProfilePanel(card: album.elderProfileCard),
-            for (final chapter in album.chapters)
-              _AlbumChapterPanel(
-                chapter: chapter,
-                photosById: photosById,
+            Expanded(
+              child: NotificationListener<ScrollNotification>(
+                onNotification: _handleScrollNotification,
+                child: ListView(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.only(bottom: 14),
+                  children: [
+                    _MemoryAlbumHeader(onRefresh: _refresh),
+                    _NarrationStatusPanel(
+                      album: album,
+                      state: _narrationPlayer.state,
+                      currentSegment: _narrationPlayer.currentSegment,
+                    ),
+                    _AlbumCoverPanel(
+                      album: album,
+                      photo: photosById[album.cover.recommendedCoverPhotoId],
+                      narrationPlayer: _narrationPlayer,
+                      keyForSegment: _keyForSegment,
+                      keyForItem: _keyForItem,
+                      onSegmentTap: _playFromSegment,
+                    ),
+                    _AlbumTextPanel(
+                      text: album.opening,
+                      itemId: 'opening',
+                      narrationPlayer: _narrationPlayer,
+                      keyForSegment: _keyForSegment,
+                      keyForItem: _keyForItem,
+                      onSegmentTap: _playFromSegment,
+                    ),
+                    _AlbumProfilePanel(
+                      card: album.elderProfileCard,
+                      narrationPlayer: _narrationPlayer,
+                      keyForSegment: _keyForSegment,
+                      keyForItem: _keyForItem,
+                      onSegmentTap: _playFromSegment,
+                    ),
+                    for (final chapter in album.chapters)
+                      _AlbumChapterPanel(
+                        chapter: chapter,
+                        photosById: photosById,
+                        narrationPlayer: _narrationPlayer,
+                        keyForSegment: _keyForSegment,
+                        keyForItem: _keyForItem,
+                        onSegmentTap: _playFromSegment,
+                      ),
+                    if (album.timeline.isNotEmpty)
+                      _AlbumTimelinePanel(entries: album.timeline),
+                    if (album.familyQuestions.isNotEmpty)
+                      _AlbumQuestionsPanel(questions: album.familyQuestions),
+                    _AlbumNotesPanel(notes: album.notes),
+                    _AlbumTextPanel(
+                      text: album.ending,
+                      itemId: 'ending',
+                      narrationPlayer: _narrationPlayer,
+                      keyForSegment: _keyForSegment,
+                      keyForItem: _keyForItem,
+                      onSegmentTap: _playFromSegment,
+                    ),
+                  ],
+                ),
               ),
-            if (album.timeline.isNotEmpty)
-              _AlbumTimelinePanel(entries: album.timeline),
-            if (album.familyQuestions.isNotEmpty)
-              _AlbumQuestionsPanel(questions: album.familyQuestions),
-            _AlbumNotesPanel(notes: album.notes),
-            _AlbumTextPanel(text: album.ending),
+            ),
+            _NarrationControlBar(
+              player: _narrationPlayer,
+              onPreviousPage: _previousPage,
+              onNextPage: _nextPage,
+            ),
           ],
         );
       },
@@ -1091,7 +1158,108 @@ class _MemoryBookViewState extends State<_MemoryBookView> {
   }
 
   void _refresh() {
+    _narrationPlayer.stop();
     setState(() => _future = _load());
+  }
+
+  bool _handleScrollNotification(ScrollNotification notification) {
+    if (notification is ScrollUpdateNotification &&
+        notification.dragDetails != null) {
+      _lastUserScrollAt = DateTime.now();
+    }
+    if (notification is UserScrollNotification) {
+      _lastUserScrollAt = DateTime.now();
+    }
+    return false;
+  }
+
+  GlobalKey _keyForSegment(String segmentId) {
+    return _segmentKeys.putIfAbsent(segmentId, () => GlobalKey());
+  }
+
+  GlobalKey _keyForItem(String itemId) {
+    return _itemKeys.putIfAbsent(itemId, () => GlobalKey());
+  }
+
+  Future<void> _playFromSegment(int index) async {
+    _lastUserScrollAt = null;
+    await _narrationPlayer.playFromSegment(index);
+  }
+
+  void _onNarrationChanged() {
+    if (!mounted) return;
+    setState(() {});
+    _autoScrollToCurrentSegment();
+  }
+
+  void _autoScrollToCurrentSegment() {
+    final segment = _narrationPlayer.currentSegment;
+    if (segment == null) return;
+    final lastScroll = _lastUserScrollAt;
+    if (lastScroll != null &&
+        DateTime.now().difference(lastScroll) < const Duration(seconds: 3)) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final segmentContext = _segmentKeys[segment.segmentId]?.currentContext;
+      final itemContext = _itemKeys[segment.itemId]?.currentContext;
+      final contextToReveal = segmentContext ?? itemContext;
+      if (contextToReveal == null) return;
+      final renderObject = contextToReveal.findRenderObject();
+      final viewport = renderObject == null
+          ? null
+          : RenderAbstractViewport.maybeOf(renderObject);
+      if (renderObject != null &&
+          viewport != null &&
+          _scrollController.hasClients) {
+        final position = _scrollController.position;
+        final targetTop = viewport.getOffsetToReveal(renderObject, 0).offset;
+        final targetBottom =
+            viewport.getOffsetToReveal(renderObject, 1).offset +
+                position.viewportDimension;
+        final visibleTop = position.pixels;
+        final visibleBottom = visibleTop + position.viewportDimension;
+        const comfortMargin = 88.0;
+        final comfortablyVisible = targetTop >= visibleTop + comfortMargin &&
+            targetBottom <= visibleBottom - comfortMargin;
+        if (comfortablyVisible) return;
+      }
+      Scrollable.ensureVisible(
+        contextToReveal,
+        duration: const Duration(milliseconds: 420),
+        curve: Curves.easeOutCubic,
+        alignment: 0.32,
+      );
+    });
+  }
+
+  Future<void> _previousPage() async {
+    final currentPage = _narrationPlayer.state.currentPageIndex;
+    final segments = _narrationPlayer.segments;
+    for (var i = _narrationPlayer.state.currentSegmentIndex - 1; i >= 0; i--) {
+      if (segments[i].pageIndex < currentPage) {
+        await _playFromSegment(i);
+        return;
+      }
+    }
+    await _playFromSegment(0);
+  }
+
+  Future<void> _nextPage() async {
+    final currentPage = _narrationPlayer.state.currentPageIndex;
+    final segments = _narrationPlayer.segments;
+    for (var i = _narrationPlayer.state.currentSegmentIndex + 1;
+        i < segments.length;
+        i++) {
+      if (segments[i].pageIndex > currentPage) {
+        await _playFromSegment(i);
+        return;
+      }
+    }
+    if (segments.isNotEmpty) {
+      await _playFromSegment(segments.length - 1);
+    }
   }
 }
 
@@ -1141,15 +1309,599 @@ class _MemoryAlbumHeader extends StatelessWidget {
   }
 }
 
+class _NarrationStatusPanel extends StatelessWidget {
+  const _NarrationStatusPanel({
+    required this.album,
+    required this.state,
+    required this.currentSegment,
+  });
+
+  final MemoryAlbum album;
+  final NarrationState state;
+  final NarrationSegment? currentSegment;
+
+  @override
+  Widget build(BuildContext context) {
+    final chapter = currentSegment?.chapterTitle.trim().isNotEmpty == true
+        ? currentSegment!.chapterTitle
+        : '尚未开始';
+    final item = currentSegment?.itemTitle.trim().isNotEmpty == true
+        ? currentSegment!.itemTitle
+        : '等待播放';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: AppTheme.surface1,
+        borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+        border: Border.all(color: AppTheme.borderHairline, width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            alignment: Alignment.center,
+            decoration: const BoxDecoration(
+              color: AppTheme.primary,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.graphic_eq_rounded,
+              color: Colors.white,
+              size: 24,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  album.albumTitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.text,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  '${album.cover.title} · $chapter',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w500,
+                    color: AppTheme.textSoft,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  item,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                    color: AppTheme.textCaption,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          _NarrationStatusChip(status: state.status),
+        ],
+      ),
+    );
+  }
+}
+
+class _NarrationStatusChip extends StatelessWidget {
+  const _NarrationStatusChip({required this.status});
+
+  final NarrationStatus status;
+
+  String get _label {
+    return switch (status) {
+      NarrationStatus.idle => '未播放',
+      NarrationStatus.playing => '播放中',
+      NarrationStatus.paused => '已暂停',
+      NarrationStatus.ended => '已读完',
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final active = status == NarrationStatus.playing;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: active ? AppTheme.primary : AppTheme.surface2,
+        borderRadius: BorderRadius.circular(AppTheme.radiusPill),
+      ),
+      child: Text(
+        _label,
+        style: TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w700,
+          color: active ? Colors.white : AppTheme.primaryDeep,
+        ),
+      ),
+    );
+  }
+}
+
+class _NarrationSegmentEntry {
+  const _NarrationSegmentEntry({
+    required this.index,
+    required this.segment,
+  });
+
+  final int index;
+  final NarrationSegment segment;
+}
+
+List<_NarrationSegmentEntry> _segmentEntriesForItem(
+  NarrationPlayer player,
+  String itemId,
+) {
+  final entries = <_NarrationSegmentEntry>[];
+  final segments = player.segments;
+  for (var i = 0; i < segments.length; i++) {
+    if (segments[i].itemId == itemId) {
+      entries.add(_NarrationSegmentEntry(index: i, segment: segments[i]));
+    }
+  }
+  return entries;
+}
+
+String _trimNarrationPunctuation(String value) {
+  return value.trim().replaceAll(RegExp(r'[。！？!?；;]+$'), '');
+}
+
+bool _isTitleSegment(NarrationSegment segment, String title) {
+  final cleanTitle = title.trim();
+  if (cleanTitle.isEmpty) return false;
+  return _trimNarrationPunctuation(segment.text) == cleanTitle;
+}
+
+_NarrationSegmentEntry? _titleEntryForItem(
+  NarrationPlayer player,
+  String itemId,
+  String title,
+) {
+  for (final entry in _segmentEntriesForItem(player, itemId)) {
+    if (_isTitleSegment(entry.segment, title)) return entry;
+  }
+  return null;
+}
+
+class _NarrationTitle extends StatelessWidget {
+  const _NarrationTitle({
+    required this.text,
+    required this.style,
+    required this.entry,
+    required this.state,
+    required this.keyForSegment,
+    required this.onSegmentTap,
+    this.maxLines,
+  });
+
+  final String text;
+  final TextStyle style;
+  final _NarrationSegmentEntry? entry;
+  final NarrationState state;
+  final GlobalKey Function(String segmentId) keyForSegment;
+  final Future<void> Function(int index) onSegmentTap;
+  final int? maxLines;
+
+  @override
+  Widget build(BuildContext context) {
+    final segmentEntry = entry;
+    final active =
+        segmentEntry != null && state.currentSegmentIndex == segmentEntry.index;
+    final title = Text(
+      text,
+      maxLines: maxLines,
+      overflow: maxLines == null ? null : TextOverflow.ellipsis,
+      style: style.copyWith(
+        color: active ? AppTheme.primaryDeep : style.color,
+      ),
+    );
+    if (segmentEntry == null) return title;
+    return InkWell(
+      key: keyForSegment(segmentEntry.segment.segmentId),
+      borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+      onTap: () => onSegmentTap(segmentEntry.index),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        decoration: BoxDecoration(
+          color: active ? AppTheme.warningSoft : Colors.transparent,
+          borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (active)
+              const Padding(
+                padding: EdgeInsets.only(top: 3, right: 6),
+                child: Icon(
+                  Icons.graphic_eq_rounded,
+                  size: 18,
+                  color: AppTheme.primaryDeep,
+                ),
+              ),
+            Expanded(child: title),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NarrationTextBlock extends StatelessWidget {
+  const _NarrationTextBlock({
+    required this.itemId,
+    required this.title,
+    required this.fallbackText,
+    required this.narrationPlayer,
+    required this.keyForSegment,
+    required this.onSegmentTap,
+    this.textStyle = const TextStyle(
+      fontSize: 20,
+      height: 1.5,
+      color: AppTheme.text,
+    ),
+  });
+
+  final String itemId;
+  final String title;
+  final String fallbackText;
+  final NarrationPlayer narrationPlayer;
+  final GlobalKey Function(String segmentId) keyForSegment;
+  final Future<void> Function(int index) onSegmentTap;
+  final TextStyle textStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = _segmentEntriesForItem(narrationPlayer, itemId)
+        .where((entry) => !_isTitleSegment(entry.segment, title))
+        .toList();
+    if (entries.isEmpty) {
+      return Text(fallbackText, style: textStyle);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final entry in entries)
+          _NarrationSentence(
+            key: keyForSegment(entry.segment.segmentId),
+            text: entry.segment.text,
+            active: narrationPlayer.state.currentSegmentIndex == entry.index,
+            textStyle: textStyle,
+            onTap: () => onSegmentTap(entry.index),
+          ),
+      ],
+    );
+  }
+}
+
+class _NarrationSentence extends StatelessWidget {
+  const _NarrationSentence({
+    super.key,
+    required this.text,
+    required this.active,
+    required this.textStyle,
+    required this.onTap,
+  });
+
+  final String text;
+  final bool active;
+  final TextStyle textStyle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
+          padding: const EdgeInsets.fromLTRB(8, 7, 10, 8),
+          decoration: BoxDecoration(
+            color: active ? AppTheme.warningSoft : Colors.transparent,
+            borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+            border: Border.all(
+              color: active ? AppTheme.accentSoft : Colors.transparent,
+              width: 1,
+            ),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 22,
+                child: AnimatedOpacity(
+                  opacity: active ? 1 : 0.28,
+                  duration: const Duration(milliseconds: 180),
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Icon(
+                      active ? Icons.volume_up_rounded : Icons.circle_rounded,
+                      size: active ? 17 : 6,
+                      color:
+                          active ? AppTheme.primaryDeep : AppTheme.textCaption,
+                    ),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Text(
+                  text,
+                  style: textStyle.copyWith(
+                    color: active ? AppTheme.primaryDeep : textStyle.color,
+                    fontWeight: active ? FontWeight.w700 : textStyle.fontWeight,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NarrationControlBar extends StatelessWidget {
+  const _NarrationControlBar({
+    required this.player,
+    required this.onPreviousPage,
+    required this.onNextPage,
+  });
+
+  final NarrationPlayer player;
+  final Future<void> Function() onPreviousPage;
+  final Future<void> Function() onNextPage;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = player.state;
+    final currentSegment = player.currentSegment;
+    final total = state.totalSegments;
+    final hasSegments = total > 0;
+    final current = hasSegments
+        ? (state.currentSegmentIndex + 1).clamp(1, total).toInt()
+        : 0;
+    final progress = hasSegments ? current / total : 0.0;
+    final isPlaying = state.status == NarrationStatus.playing;
+    final chapter = currentSegment?.chapterTitle.trim().isNotEmpty == true
+        ? currentSegment!.chapterTitle
+        : '听回忆';
+
+    return SafeArea(
+      top: false,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        decoration: const BoxDecoration(
+          color: AppTheme.surface1,
+          border: Border(
+            top: BorderSide(color: AppTheme.borderHairline, width: 1),
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (state.errorMessage != null) ...[
+              Text(
+                state.errorMessage!,
+                style: const TextStyle(
+                  fontSize: 15,
+                  height: 1.25,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.primaryDeep,
+                ),
+              ),
+              const SizedBox(height: 6),
+            ],
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    chapter,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.text,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  hasSegments ? '第 $current 句 / 共 $total 句' : '暂无可朗读内容',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textSoft,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 7),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(AppTheme.radiusPill),
+              child: LinearProgressIndicator(
+                minHeight: 7,
+                value: progress,
+                backgroundColor: AppTheme.borderHairline,
+                valueColor: const AlwaysStoppedAnimation<Color>(
+                  AppTheme.primary,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                _NarrationIconButton(
+                  tooltip: '上一页',
+                  icon: Icons.skip_previous_rounded,
+                  onPressed:
+                      hasSegments ? () => unawaited(onPreviousPage()) : null,
+                ),
+                _NarrationIconButton(
+                  tooltip: '上一句',
+                  icon: Icons.keyboard_arrow_left_rounded,
+                  onPressed: hasSegments && state.currentSegmentIndex > 0
+                      ? () => unawaited(player.previousSegment())
+                      : null,
+                ),
+                const SizedBox(width: 4),
+                SizedBox(
+                  width: 54,
+                  height: 54,
+                  child: FilledButton(
+                    style: FilledButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      shape: const CircleBorder(),
+                    ),
+                    onPressed: () => _togglePlay(),
+                    child: Icon(
+                      isPlaying
+                          ? Icons.pause_rounded
+                          : state.status == NarrationStatus.ended
+                              ? Icons.replay_rounded
+                              : Icons.play_arrow_rounded,
+                      size: 32,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                _NarrationIconButton(
+                  tooltip: '下一句',
+                  icon: Icons.keyboard_arrow_right_rounded,
+                  onPressed:
+                      hasSegments && state.currentSegmentIndex < total - 1
+                          ? () => unawaited(player.nextSegment())
+                          : null,
+                ),
+                _NarrationIconButton(
+                  tooltip: '下一页',
+                  icon: Icons.skip_next_rounded,
+                  onPressed: hasSegments ? () => unawaited(onNextPage()) : null,
+                ),
+                const Spacer(),
+                PopupMenuButton<double>(
+                  tooltip: '语速',
+                  initialValue: state.speed,
+                  onSelected: player.setSpeed,
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(value: 0.8, child: Text('0.8x')),
+                    PopupMenuItem(value: 1.0, child: Text('1.0x')),
+                    PopupMenuItem(value: 1.25, child: Text('1.25x')),
+                  ],
+                  child: Container(
+                    height: 42,
+                    padding: const EdgeInsets.symmetric(horizontal: 11),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: AppTheme.surface2,
+                      borderRadius: BorderRadius.circular(AppTheme.radiusPill),
+                    ),
+                    child: Text(
+                      '${state.speed.toStringAsFixed(state.speed == 1 ? 0 : 2)}x',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.primaryDeep,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _togglePlay() {
+    switch (player.state.status) {
+      case NarrationStatus.playing:
+        player.pause();
+        return;
+      case NarrationStatus.paused:
+        player.resume();
+        return;
+      case NarrationStatus.ended:
+        unawaited(player.playFromSegment(0));
+        return;
+      case NarrationStatus.idle:
+        unawaited(player.play());
+        return;
+    }
+  }
+}
+
+class _NarrationIconButton extends StatelessWidget {
+  const _NarrationIconButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: Icon(icon),
+      iconSize: 30,
+      style: IconButton.styleFrom(
+        minimumSize: const Size(42, 42),
+        foregroundColor: AppTheme.primaryDeep,
+        disabledForegroundColor: AppTheme.textCaption,
+      ),
+    );
+  }
+}
+
 class _AlbumCoverPanel extends StatelessWidget {
-  const _AlbumCoverPanel({required this.album, required this.photo});
+  const _AlbumCoverPanel({
+    required this.album,
+    required this.photo,
+    required this.narrationPlayer,
+    required this.keyForSegment,
+    required this.keyForItem,
+    required this.onSegmentTap,
+  });
 
   final MemoryAlbum album;
   final ProfilePhotoModel? photo;
+  final NarrationPlayer narrationPlayer;
+  final GlobalKey Function(String segmentId) keyForSegment;
+  final GlobalKey Function(String itemId) keyForItem;
+  final Future<void> Function(int index) onSegmentTap;
 
   @override
   Widget build(BuildContext context) {
     return _AlbumPanel(
+      key: keyForItem('cover'),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1163,8 +1915,16 @@ class _AlbumCoverPanel extends StatelessWidget {
             ),
             const SizedBox(height: 14),
           ],
-          Text(
-            album.albumTitle,
+          _NarrationTitle(
+            text: album.albumTitle,
+            entry: _titleEntryForItem(
+              narrationPlayer,
+              'cover',
+              album.albumTitle,
+            ),
+            state: narrationPlayer.state,
+            keyForSegment: keyForSegment,
+            onSegmentTap: onSegmentTap,
             style: const TextStyle(
               fontSize: 28,
               fontWeight: FontWeight.w800,
@@ -1184,9 +1944,14 @@ class _AlbumCoverPanel extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 10),
-          Text(
-            album.cover.coverText,
-            style: const TextStyle(
+          _NarrationTextBlock(
+            itemId: 'cover',
+            title: album.albumTitle,
+            fallbackText: album.cover.coverText,
+            narrationPlayer: narrationPlayer,
+            keyForSegment: keyForSegment,
+            onSegmentTap: onSegmentTap,
+            textStyle: const TextStyle(
               fontSize: 20,
               height: 1.45,
               color: AppTheme.text,
@@ -1199,22 +1964,47 @@ class _AlbumCoverPanel extends StatelessWidget {
 }
 
 class _AlbumTextPanel extends StatelessWidget {
-  const _AlbumTextPanel({required this.text});
+  const _AlbumTextPanel({
+    required this.text,
+    required this.itemId,
+    required this.narrationPlayer,
+    required this.keyForSegment,
+    required this.keyForItem,
+    required this.onSegmentTap,
+  });
 
   final AlbumText text;
+  final String itemId;
+  final NarrationPlayer narrationPlayer;
+  final GlobalKey Function(String segmentId) keyForSegment;
+  final GlobalKey Function(String itemId) keyForItem;
+  final Future<void> Function(int index) onSegmentTap;
 
   @override
   Widget build(BuildContext context) {
     if (text.content.trim().isEmpty) return const SizedBox.shrink();
     return _AlbumPanel(
+      key: keyForItem(itemId),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _AlbumSectionTitle(text.title),
+          _NarrationTitle(
+            text: text.title,
+            entry: _titleEntryForItem(narrationPlayer, itemId, text.title),
+            state: narrationPlayer.state,
+            keyForSegment: keyForSegment,
+            onSegmentTap: onSegmentTap,
+            style: _AlbumSectionTitle.style,
+          ),
           const SizedBox(height: 8),
-          Text(
-            text.content,
-            style: const TextStyle(
+          _NarrationTextBlock(
+            itemId: itemId,
+            title: text.title,
+            fallbackText: text.content,
+            narrationPlayer: narrationPlayer,
+            keyForSegment: keyForSegment,
+            onSegmentTap: onSegmentTap,
+            textStyle: const TextStyle(
               fontSize: 20,
               height: 1.48,
               color: AppTheme.text,
@@ -1227,22 +2017,49 @@ class _AlbumTextPanel extends StatelessWidget {
 }
 
 class _AlbumProfilePanel extends StatelessWidget {
-  const _AlbumProfilePanel({required this.card});
+  const _AlbumProfilePanel({
+    required this.card,
+    required this.narrationPlayer,
+    required this.keyForSegment,
+    required this.keyForItem,
+    required this.onSegmentTap,
+  });
 
   final ElderProfileCard card;
+  final NarrationPlayer narrationPlayer;
+  final GlobalKey Function(String segmentId) keyForSegment;
+  final GlobalKey Function(String itemId) keyForItem;
+  final Future<void> Function(int index) onSegmentTap;
 
   @override
   Widget build(BuildContext context) {
     if (card.profileItems.isEmpty) return const SizedBox.shrink();
     return _AlbumPanel(
+      key: keyForItem('elder_profile_card'),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _AlbumSectionTitle(card.title),
+          _NarrationTitle(
+            text: card.title,
+            entry: _titleEntryForItem(
+              narrationPlayer,
+              'elder_profile_card',
+              card.title,
+            ),
+            state: narrationPlayer.state,
+            keyForSegment: keyForSegment,
+            onSegmentTap: onSegmentTap,
+            style: _AlbumSectionTitle.style,
+          ),
           const SizedBox(height: 8),
-          Text(
-            card.content,
-            style: const TextStyle(
+          _NarrationTextBlock(
+            itemId: 'elder_profile_card',
+            title: card.title,
+            fallbackText: card.content,
+            narrationPlayer: narrationPlayer,
+            keyForSegment: keyForSegment,
+            onSegmentTap: onSegmentTap,
+            textStyle: const TextStyle(
               fontSize: 20,
               height: 1.45,
               color: AppTheme.text,
@@ -1267,26 +2084,44 @@ class _AlbumChapterPanel extends StatelessWidget {
   const _AlbumChapterPanel({
     required this.chapter,
     required this.photosById,
+    required this.narrationPlayer,
+    required this.keyForSegment,
+    required this.keyForItem,
+    required this.onSegmentTap,
   });
 
   final MemoryAlbumChapter chapter;
   final Map<String, ProfilePhotoModel> photosById;
+  final NarrationPlayer narrationPlayer;
+  final GlobalKey Function(String segmentId) keyForSegment;
+  final GlobalKey Function(String itemId) keyForItem;
+  final Future<void> Function(int index) onSegmentTap;
 
   @override
   Widget build(BuildContext context) {
     if (chapter.items.isEmpty) return const SizedBox.shrink();
+    final introItemId = '${chapter.chapterId}_intro';
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
+            key: keyForItem(introItemId),
             padding: const EdgeInsets.fromLTRB(4, 12, 4, 8),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  chapter.chapterTitle,
+                _NarrationTitle(
+                  text: chapter.chapterTitle,
+                  entry: _titleEntryForItem(
+                    narrationPlayer,
+                    introItemId,
+                    chapter.chapterTitle,
+                  ),
+                  state: narrationPlayer.state,
+                  keyForSegment: keyForSegment,
+                  onSegmentTap: onSegmentTap,
                   style: const TextStyle(
                     fontSize: 25,
                     fontWeight: FontWeight.w800,
@@ -1307,9 +2142,14 @@ class _AlbumChapterPanel extends StatelessWidget {
                 ],
                 if (chapter.chapterIntro.isNotEmpty) ...[
                   const SizedBox(height: 8),
-                  Text(
-                    chapter.chapterIntro,
-                    style: const TextStyle(
+                  _NarrationTextBlock(
+                    itemId: introItemId,
+                    title: chapter.chapterTitle,
+                    fallbackText: chapter.chapterIntro,
+                    narrationPlayer: narrationPlayer,
+                    keyForSegment: keyForSegment,
+                    onSegmentTap: onSegmentTap,
+                    textStyle: const TextStyle(
                       fontSize: 19,
                       height: 1.4,
                       color: AppTheme.text,
@@ -1323,6 +2163,10 @@ class _AlbumChapterPanel extends StatelessWidget {
             _AlbumItemPanel(
               item: item,
               photo: photosById[item.photoId],
+              narrationPlayer: narrationPlayer,
+              keyForSegment: keyForSegment,
+              keyForItem: keyForItem,
+              onSegmentTap: onSegmentTap,
             ),
         ],
       ),
@@ -1331,14 +2175,26 @@ class _AlbumChapterPanel extends StatelessWidget {
 }
 
 class _AlbumItemPanel extends StatelessWidget {
-  const _AlbumItemPanel({required this.item, required this.photo});
+  const _AlbumItemPanel({
+    required this.item,
+    required this.photo,
+    required this.narrationPlayer,
+    required this.keyForSegment,
+    required this.keyForItem,
+    required this.onSegmentTap,
+  });
 
   final MemoryAlbumItem item;
   final ProfilePhotoModel? photo;
+  final NarrationPlayer narrationPlayer;
+  final GlobalKey Function(String segmentId) keyForSegment;
+  final GlobalKey Function(String itemId) keyForItem;
+  final Future<void> Function(int index) onSegmentTap;
 
   @override
   Widget build(BuildContext context) {
     return _AlbumPanel(
+      key: keyForItem(item.itemId),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1358,8 +2214,17 @@ class _AlbumItemPanel extends StatelessWidget {
               _AlbumTypeBadge(type: item.itemType),
               const SizedBox(width: 8),
               Expanded(
-                child: Text(
-                  item.title,
+                child: _NarrationTitle(
+                  text: item.title,
+                  entry: _titleEntryForItem(
+                    narrationPlayer,
+                    item.itemId,
+                    item.title,
+                  ),
+                  state: narrationPlayer.state,
+                  keyForSegment: keyForSegment,
+                  onSegmentTap: onSegmentTap,
+                  maxLines: 3,
                   style: const TextStyle(
                     fontSize: 22,
                     height: 1.25,
@@ -1371,9 +2236,14 @@ class _AlbumItemPanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          Text(
-            item.content,
-            style: const TextStyle(
+          _NarrationTextBlock(
+            itemId: item.itemId,
+            title: item.title,
+            fallbackText: item.content,
+            narrationPlayer: narrationPlayer,
+            keyForSegment: keyForSegment,
+            onSegmentTap: onSegmentTap,
+            textStyle: const TextStyle(
               fontSize: 20,
               height: 1.5,
               color: AppTheme.text,
@@ -1580,7 +2450,7 @@ class _AlbumNotesPanel extends StatelessWidget {
 }
 
 class _AlbumPanel extends StatelessWidget {
-  const _AlbumPanel({required this.child});
+  const _AlbumPanel({super.key, required this.child});
 
   final Widget child;
 
@@ -1604,16 +2474,18 @@ class _AlbumSectionTitle extends StatelessWidget {
 
   final String text;
 
+  static const style = TextStyle(
+    fontSize: 23,
+    height: 1.2,
+    fontWeight: FontWeight.w800,
+    color: AppTheme.text,
+  );
+
   @override
   Widget build(BuildContext context) {
     return Text(
       text,
-      style: const TextStyle(
-        fontSize: 23,
-        height: 1.2,
-        fontWeight: FontWeight.w800,
-        color: AppTheme.text,
-      ),
+      style: style,
     );
   }
 }
@@ -1900,8 +2772,7 @@ class _RecentNotesViewState extends State<_RecentNotesView> {
     final out = <Object>[];
     String? currentGroup;
     for (final row in rows) {
-      final timestamp =
-          DateTime.tryParse(row['timestamp'] as String? ?? '');
+      final timestamp = DateTime.tryParse(row['timestamp'] as String? ?? '');
       final group = _groupLabel(timestamp);
       if (group != currentGroup) {
         out.add(group);
@@ -2082,8 +2953,7 @@ class _ChatHistoryItem extends StatelessWidget {
                     fontSize: 20,
                     height: 1.5,
                     fontWeight: FontWeight.w400,
-                    color:
-                        isEmpty ? AppTheme.textCaption : AppTheme.text,
+                    color: isEmpty ? AppTheme.textCaption : AppTheme.text,
                   ),
                 ),
               ],
@@ -2624,8 +3494,7 @@ class _TypingPanel extends StatelessWidget {
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(horizontal: 18),
                 shape: RoundedRectangleBorder(
-                  borderRadius:
-                      BorderRadius.circular(AppTheme.radiusMedium),
+                  borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
                 ),
               ),
               child: Text(
@@ -2702,8 +3571,7 @@ class _BottomVoiceBar extends StatelessWidget {
                 child: Container(
                   decoration: BoxDecoration(
                     color: voiceColor,
-                    borderRadius:
-                        BorderRadius.circular(AppTheme.radiusLarge),
+                    borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
                     boxShadow: isRecording
                         ? [
                             BoxShadow(
@@ -2764,7 +3632,6 @@ class _BottomVoiceBar extends StatelessWidget {
     );
   }
 }
-
 
 class _SideAction extends StatelessWidget {
   const _SideAction({

@@ -26,7 +26,10 @@ def _load(filename: str) -> Any:
     path = _DIR / filename
     if not path.is_file():
         raise FileNotFoundError(path)
-    mod_name = "_test_" + filename.replace(".py", "").replace(".", "_")
+    mod_name = (
+        "_test_"
+        + filename.replace(".py", "").replace(".", "_").replace("/", "_").replace("\\", "_")
+    )
     spec = importlib.util.spec_from_file_location(mod_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load {path}")
@@ -36,11 +39,11 @@ def _load(filename: str) -> Any:
 
 
 # 按需加载各模块
-_gp11 = _load("global_prompt_v1.1.py")
-_dg11 = _load("daily_greeting_v1.1.py")
-_mc11 = _load("memory_chat_v1.1.py")
-_ct11 = _load("cognitive_test_v1.1.py")
-_es11 = _load("emotion_support_v1.1.py")
+_gp11 = _load("v1.1/global_prompt.py")
+_dg11 = _load("v1.1/daily_greeting.py")
+_mc11 = _load("v1.1/memory_chat.py")
+_ct11 = _load("v1.1/cognitive_test.py")
+_es11 = _load("v1.1/emotion_support.py")
 
 
 class TestV11Modules(unittest.TestCase):
@@ -157,7 +160,7 @@ class TestComposerV11(unittest.TestCase):
         cls.compose_for_request = staticmethod(compose_for_request)
 
     def test_compose_default_v11(self):
-        result = self.compose_system_prompt()
+        result = self.compose_system_prompt(version="v1.1")
         self.assertEqual(result["role"], "system")
         self.assertIn("v1.1", result["prompt_meta"]["version"])
         self.assertIn("晚辈家人", result["content"])

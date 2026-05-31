@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../config/constants.dart';
+import '../core/services/chat_attachment_service.dart';
 import '../data/models/chat_message.dart';
 import '../data/models/extracted_relation_hint.dart';
 import '../data/models/memory_extraction_payload.dart';
@@ -16,6 +17,10 @@ import 'relation_extractor.dart';
 import 'prompt_task_router.dart';
 import 'user_archive_cache.dart';
 import '../data/models/profile_photo.dart';
+import '../data/models/profile_video.dart';
+import 'profile_video_reply.dart';
+
+enum _MediaLookupKind { none, photo, video }
 
 class ChatProvider extends ChangeNotifier {
   ChatProvider({ChatRepository? repository})
@@ -25,6 +30,8 @@ class ChatProvider extends ChangeNotifier {
 
   static const String defaultUserId = 'local_user_default';
   static const String defaultConversationId = 'local_conversation_home';
+  static const String _photoNotFoundReply = '对不起，没有找到您需要的图片。';
+  static const String _videoNotFoundReply = '对不起，没有找到您需要的视频。';
 
   final ChatRepository _repository;
   final List<ChatMessage> _messages = <ChatMessage>[];
@@ -43,6 +50,10 @@ class ChatProvider extends ChangeNotifier {
   /// 最近一次「看照片」检索原话；用于用户说「不是这张」时换批展示。
   String? _activePhotoQueryText;
   final Set<String> _shownPhotoIdsForActiveQuery = <String>{};
+
+  /// 最近一次「看视频」检索原话。
+  String? _activeVideoQueryText;
+  final Set<String> _shownVideoIdsForActiveQuery = <String>{};
 
   UserArchiveCache? _archiveCache;
   Future<UserArchiveCache>? _archivePrefetchFuture;
@@ -116,6 +127,14 @@ class ChatProvider extends ChangeNotifier {
     _archivePrefetchFuture = null;
   }
 
+  /// 预录入或设置变更后重新加载档案快照（照片 / 视频 / 文字）。
+  Future<void> reloadUserArchive() async {
+    await _initFuture;
+    _invalidateArchiveCache();
+    await _ensureArchivePrefetched();
+    notifyListeners();
+  }
+
   Future<void> sendMessage(
     String content, {
     Duration networkTimeout = const Duration(seconds: 110),
@@ -123,8 +142,6 @@ class ChatProvider extends ChangeNotifier {
     await _initFuture;
     final text = content.trim();
     if (text.isEmpty || _isSending) return;
-
-    final archive = await _ensureArchivePrefetched();
 
     _userTurnCount += 1;
     _lastUserText = text;
@@ -134,88 +151,19 @@ class ChatProvider extends ChangeNotifier {
     _isSending = true;
     notifyListeners();
 
-    final isPhotoRejection = ProfilePhotoReplyResolver.isRejectionPhrase(text);
-    ProfilePhotoReplyResult photoReply;
-
-    if (isPhotoRejection &&
-        _activePhotoQueryText != null &&
-        _activePhotoQueryText!.isNotEmpty) {
-      photoReply = await ProfilePhotoReplyResolver.resolve(
-        userText: text,
-        cache: archive,
-        repository: _repository,
-        excludePhotoIds: _shownPhotoIdsForActiveQuery,
-        isRejection: true,
-        previousQueryText: _activePhotoQueryText,
-      );
-    } else {
-      if (ProfilePhotoReplyResolver.hasPhotoIntent(text)) {
-        _activePhotoQueryText = text;
-        _shownPhotoIdsForActiveQuery.clear();
-      } else if (!isPhotoRejection) {
-        _clearPhotoBrowseSession();
-      }
-      photoReply = await ProfilePhotoReplyResolver.resolve(
-        userText: text,
-        cache: archive,
-        repository: _repository,
-        isRejection: isPhotoRejection,
-      );
-      if (photoReply.queryText != null && photoReply.photoRequested) {
-        _activePhotoQueryText = photoReply.queryText;
-      }
-    }
-
-    if (photoReply.status == ProfilePhotoReplyStatus.matched) {
-      try {
-        await _emitProfilePhotos(photoReply.photos);
-        _shownPhotoIdsForActiveQuery
-            .addAll(photoReply.photos.map((p) => p.id));
-        await _extractRelationsFromRecentChat(sourceMessageId: userMessage.id);
-      } finally {
-        _isSending = false;
-        notifyListeners();
-      }
+    final mediaKind = _mediaLookupKindFor(text);
+    if (mediaKind == _MediaLookupKind.video) {
+      await _handleVideoMediaRequest(text, userMessage.id);
       return;
     }
-
-    if (isPhotoRejection &&
-        photoReply.status == ProfilePhotoReplyStatus.exhausted) {
-      try {
-        final hint = _textMessage(
-          content: '相关照片都给您看过了。您可以说要看哪一类，比如「家庭照片」或家里人名字。',
-          isUser: false,
-        );
-        _messages.add(hint);
-        await _trySaveMessage(hint);
-        await _extractRelationsFromRecentChat(sourceMessageId: userMessage.id);
-      } finally {
-        _isSending = false;
-        notifyListeners();
-      }
-      return;
-    }
-
-    if (isPhotoRejection &&
-        _activePhotoQueryText == null &&
-        photoReply.status == ProfilePhotoReplyStatus.notRequested) {
-      try {
-        final hint = _textMessage(
-          content: '您先说想看哪方面的照片，我再给您找，比如「看看家庭照片」。',
-          isUser: false,
-        );
-        _messages.add(hint);
-        await _trySaveMessage(hint);
-      } finally {
-        _isSending = false;
-        notifyListeners();
-      }
+    if (mediaKind == _MediaLookupKind.photo) {
+      await _handlePhotoMediaRequest(text, userMessage.id);
       return;
     }
 
     try {
       final promptContext = await _buildPromptContextAsync(
-        photoLookupNote: _photoLookupNoteForLlm(photoReply),
+        photoLookupNote: null,
       );
       final reply = await _repository
           .sendMessage(
@@ -250,12 +198,222 @@ class ChatProvider extends ChangeNotifier {
     sendMessage(text);
   }
 
+  /// 用户通过「+」上传图片或视频：图片与视频分轨入库。
+  Future<void> sendAttachment(
+    PickedChatAttachment picked, {
+    String? caption,
+    Duration networkTimeout = const Duration(seconds: 110),
+  }) async {
+    if (picked.isImage) {
+      await _sendImageAttachment(
+        picked,
+        caption: caption,
+        networkTimeout: networkTimeout,
+      );
+    } else {
+      await _sendVideoAttachment(
+        picked,
+        caption: caption,
+        networkTimeout: networkTimeout,
+      );
+    }
+  }
+
+  Future<void> _sendImageAttachment(
+    PickedChatAttachment picked, {
+    String? caption,
+    Duration networkTimeout = const Duration(seconds: 110),
+  }) async {
+    await _initFuture;
+    if (_isSending) return;
+
+    final trimmedCaption = caption?.trim() ?? '';
+    const defaultLabel = '分享了一张照片';
+    final displayText =
+        trimmedCaption.isNotEmpty ? trimmedCaption : defaultLabel;
+
+    final messageId = _newId('user');
+    final attachmentId = _newId('att');
+    final profilePhotoId = _newId('photo');
+
+    final photo = ProfilePhotoModel(
+      id: profilePhotoId,
+      ownerUserId: _activeUserId,
+      filePath: picked.stablePath,
+      storageType: kIsWeb
+          ? ProfilePhotoStorageType.webLocal
+          : ProfilePhotoStorageType.filePath,
+      category: ProfilePhotoCategory.memory,
+      caption: displayText,
+      metadata: {
+        'source': 'chat',
+        'media_type': 'image',
+        'message_id': messageId,
+        'attachment_id': attachmentId,
+        'original_name': picked.originalName,
+        'mime': picked.mimeType,
+      },
+    );
+
+    final userMessage = ChatMessage(
+      id: messageId,
+      content: displayText,
+      isUser: true,
+      timestamp: DateTime.now(),
+      kind: ChatMessageKind.attachment,
+      attachmentMediaType: ChatAttachmentMediaType.image,
+      imagePath: picked.stablePath,
+      profilePhotoId: profilePhotoId,
+      attachmentId: attachmentId,
+    );
+
+    await _finalizeAttachmentSend(
+      picked: picked,
+      userMessage: userMessage,
+      attachmentId: attachmentId,
+      profilePhotoId: profilePhotoId,
+      displayText: displayText,
+      beforeLlm: () async {
+        await LocalDatabase.insertProfilePhoto(photo);
+      },
+      photoLookupNote:
+          '【系统】老人刚刚在对话中上传了一张照片，说明文字：$displayText。请温和回应并自然引导其补充照片中的人物、地点或年代。',
+      localFallbackReply: '这张照片我已经收到了。您慢慢讲讲，里面都有谁、是在哪儿拍的？',
+      networkTimeout: networkTimeout,
+    );
+  }
+
+  Future<void> _sendVideoAttachment(
+    PickedChatAttachment picked, {
+    String? caption,
+    Duration networkTimeout = const Duration(seconds: 110),
+  }) async {
+    await _initFuture;
+    if (_isSending) return;
+
+    final trimmedCaption = caption?.trim() ?? '';
+    const defaultLabel = '分享了一段视频';
+    final displayText =
+        trimmedCaption.isNotEmpty ? trimmedCaption : defaultLabel;
+
+    final messageId = _newId('user');
+    final videoId = _newId('video');
+
+    final video = ProfileVideoModel(
+      id: videoId,
+      ownerUserId: _activeUserId,
+      filePath: picked.stablePath,
+      category: ProfileVideoCategory.memory,
+      caption: displayText,
+      messageId: messageId,
+      mime: picked.mimeType,
+      metadata: {
+        'source': 'chat',
+        'attachment_id': videoId,
+        'original_name': picked.originalName,
+      },
+    );
+
+    final userMessage = ChatMessage(
+      id: messageId,
+      content: displayText,
+      isUser: true,
+      timestamp: DateTime.now(),
+      kind: ChatMessageKind.attachment,
+      attachmentMediaType: ChatAttachmentMediaType.video,
+      videoPath: picked.stablePath,
+      attachmentId: videoId,
+    );
+
+    await _finalizeAttachmentSend(
+      picked: picked,
+      userMessage: userMessage,
+      attachmentId: videoId,
+      profilePhotoId: null,
+      displayText: displayText,
+      beforeLlm: () async {
+        await LocalDatabase.insertProfileVideo(video);
+      },
+      photoLookupNote:
+          '【系统】老人刚刚在对话中上传了一段视频，说明文字：$displayText。请温和回应并自然引导其补充视频中的人物、地点或年代。不要提及照片。',
+      localFallbackReply: '这段视频我已经收到了。您慢慢讲讲，里面都有什么？',
+      networkTimeout: networkTimeout,
+    );
+  }
+
+  Future<void> _finalizeAttachmentSend({
+    required PickedChatAttachment picked,
+    required ChatMessage userMessage,
+    required String attachmentId,
+    required String? profilePhotoId,
+    required String displayText,
+    required Future<void> Function() beforeLlm,
+    required String photoLookupNote,
+    required String localFallbackReply,
+    Duration networkTimeout = const Duration(seconds: 110),
+  }) async {
+    _userTurnCount += 1;
+    _lastUserText = displayText;
+    _messages.add(userMessage);
+    _isSending = true;
+    notifyListeners();
+
+    try {
+      await beforeLlm();
+      await LocalDatabase.insertAttachment({
+        'id': attachmentId,
+        'message_id': userMessage.id,
+        'type': picked.type.name,
+        'file_path': picked.stablePath,
+        'mime': picked.mimeType,
+        'size': picked.sizeBytes,
+        'metadata': json.encode({
+          if (profilePhotoId != null) 'profile_photo_id': profilePhotoId,
+          if (picked.isVideo) 'profile_video_id': attachmentId,
+          'original_name': picked.originalName,
+          'source': 'chat',
+          'owner_user_id': _activeUserId,
+        }),
+      });
+      await _saveMessage(userMessage);
+      await reloadUserArchive();
+
+      final promptContext = await _buildPromptContextAsync(
+        photoLookupNote: photoLookupNote,
+      );
+      final reply = await _repository
+          .sendMessage(
+            history: _messages,
+            promptContext: promptContext,
+          )
+          .timeout(networkTimeout);
+      final assistantMessage = _textMessage(content: reply, isUser: false);
+      _messages.add(assistantMessage);
+      await _trySaveMessage(assistantMessage);
+      await _extractRelationsFromRecentChat(sourceMessageId: userMessage.id);
+    } catch (error) {
+      debugPrint('[sendAttachment] LLM 回复失败，使用本地回应: $error');
+      final assistantMessage = _textMessage(
+        content: localFallbackReply,
+        isUser: false,
+      );
+      _messages.add(assistantMessage);
+      await _trySaveMessage(assistantMessage);
+      try {
+        await _extractRelationsFromRecentChat(sourceMessageId: userMessage.id);
+      } catch (_) {}
+    } finally {
+      _isSending = false;
+      notifyListeners();
+    }
+  }
+
   /// 删除一条本地聊天记录（数据库 + 当前内存列表）。
   Future<void> deleteMessageById(String messageId) async {
     await _initFuture;
     await LocalDatabase.deleteMessageById(messageId);
     _messages.removeWhere((m) => m.id == messageId);
-    notifyListeners();
+    await reloadUserArchive();
   }
 
   /// 清空默认会话的全部聊天历史，并插入一条新的欢迎语。
@@ -265,6 +423,7 @@ class ChatProvider extends ChangeNotifier {
     _messages.clear();
     _userTurnCount = 0;
     _clearPhotoBrowseSession();
+    _clearVideoBrowseSession();
     final welcome = ChatMessage(
       id: _newId('welcome'),
       content: '今天想聊什么？我在这里陪着您，慢慢说就好。',
@@ -296,6 +455,7 @@ class ChatProvider extends ChangeNotifier {
     if (_activeUserId == userId) return;
     _invalidateArchiveCache();
     _clearPhotoBrowseSession();
+    _clearVideoBrowseSession();
     _activeUserId = userId;
     _activeConversationId =
         await LocalDatabase.ensureHomeConversationForUser(userId);
@@ -349,23 +509,206 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
+  Future<void> _emitProfileVideos(List<ProfileVideoModel> videos) async {
+    for (final video in videos) {
+      final label = ProfileVideoReplyResolver.describeVideo(video);
+      final msg = ChatMessage(
+        id: _newId('video'),
+        content: video.caption?.trim().isNotEmpty == true
+            ? video.caption!.trim()
+            : '给您看这段$label',
+        isUser: false,
+        timestamp: DateTime.now(),
+        kind: ChatMessageKind.attachment,
+        attachmentMediaType: ChatAttachmentMediaType.video,
+        videoPath: video.filePath,
+        attachmentId: video.id,
+      );
+      _messages.add(msg);
+      await _trySaveMessage(msg);
+    }
+  }
+
   /// 用户要照片但未命中本地档案时，给大模型一句内部提示（写入档案摘要末尾）。
   void _clearPhotoBrowseSession() {
     _activePhotoQueryText = null;
     _shownPhotoIdsForActiveQuery.clear();
   }
 
-  String? _photoLookupNoteForLlm(ProfilePhotoReplyResult photoReply) {
-    if (!photoReply.photoRequested) return null;
-    return switch (photoReply.status) {
-      ProfilePhotoReplyStatus.noPhotosInDb =>
-        '【系统】老人想看照片，但本地尚未保存任何照片。请温和说明可让家人在「数据预录入」里添加，不要假装已经展示图片。',
-      ProfilePhotoReplyStatus.noMatch =>
-        '【系统】老人想看照片，但未匹配到具体条目。请结合已知档案自然回应，勿编造已发图。',
-      ProfilePhotoReplyStatus.exhausted =>
-        '【系统】老人已看过当前条件下全部相关照片。请自然接话，可引导说更具体的类别或人物。',
-      _ => null,
-    };
+  void _clearVideoBrowseSession() {
+    _activeVideoQueryText = null;
+    _shownVideoIdsForActiveQuery.clear();
+  }
+
+  /// 图片与视频检索互斥：视频意图优先；换一批时按当前浏览会话判定。
+  _MediaLookupKind _mediaLookupKindFor(String text) {
+    if (ProfileVideoReplyResolver.hasVideoIntent(text)) {
+      return _MediaLookupKind.video;
+    }
+    if (ProfilePhotoReplyResolver.hasPhotoIntent(text)) {
+      return _MediaLookupKind.photo;
+    }
+    if (ProfileVideoReplyResolver.isRejectionPhrase(text) &&
+        _activeVideoQueryText != null &&
+        _activeVideoQueryText!.isNotEmpty) {
+      return _MediaLookupKind.video;
+    }
+    if (ProfilePhotoReplyResolver.isRejectionPhrase(text) &&
+        _activePhotoQueryText != null &&
+        _activePhotoQueryText!.isNotEmpty) {
+      return _MediaLookupKind.photo;
+    }
+    return _MediaLookupKind.none;
+  }
+
+  Future<void> _emitAssistantReplyAndFinish({
+    required String content,
+    required String sourceMessageId,
+    bool extractRelations = true,
+  }) async {
+    try {
+      final hint = _textMessage(content: content, isUser: false);
+      _messages.add(hint);
+      await _trySaveMessage(hint);
+      if (extractRelations) {
+        await _extractRelationsFromRecentChat(sourceMessageId: sourceMessageId);
+      }
+    } finally {
+      _isSending = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _handleVideoMediaRequest(
+    String text,
+    String userMessageId,
+  ) async {
+    await reloadUserArchive();
+    final archive = await _ensureArchivePrefetched();
+    final isRejection = ProfileVideoReplyResolver.isRejectionPhrase(text);
+
+    ProfileVideoReplyResult videoReply;
+    if (isRejection &&
+        _activeVideoQueryText != null &&
+        _activeVideoQueryText!.isNotEmpty) {
+      videoReply = await ProfileVideoReplyResolver.resolve(
+        userText: text,
+        cache: archive,
+        repository: _repository,
+        excludeVideoIds: _shownVideoIdsForActiveQuery,
+        isRejection: true,
+        previousQueryText: _activeVideoQueryText,
+      );
+    } else {
+      if (ProfileVideoReplyResolver.hasVideoIntent(text)) {
+        _activeVideoQueryText = text;
+        _shownVideoIdsForActiveQuery.clear();
+        _clearPhotoBrowseSession();
+      }
+      videoReply = await ProfileVideoReplyResolver.resolve(
+        userText: text,
+        cache: archive,
+        repository: _repository,
+        isRejection: isRejection,
+      );
+      if (videoReply.queryText != null && videoReply.videoRequested) {
+        _activeVideoQueryText = videoReply.queryText;
+      }
+    }
+
+    if (videoReply.status == ProfileVideoReplyStatus.matched) {
+      try {
+        await _emitProfileVideos(videoReply.videos);
+        _shownVideoIdsForActiveQuery
+            .addAll(videoReply.videos.map((v) => v.id));
+        await _extractRelationsFromRecentChat(sourceMessageId: userMessageId);
+      } finally {
+        _isSending = false;
+        notifyListeners();
+      }
+      return;
+    }
+
+    if (isRejection &&
+        videoReply.status == ProfileVideoReplyStatus.exhausted) {
+      await _emitAssistantReplyAndFinish(
+        content: '相关视频都给您看过了。您可以说想看哪一类，比如「家庭视频」。',
+        sourceMessageId: userMessageId,
+      );
+      return;
+    }
+
+    await _emitAssistantReplyAndFinish(
+      content: _videoNotFoundReply,
+      sourceMessageId: userMessageId,
+      extractRelations: false,
+    );
+  }
+
+  Future<void> _handlePhotoMediaRequest(
+    String text,
+    String userMessageId,
+  ) async {
+    await reloadUserArchive();
+    final archive = await _ensureArchivePrefetched();
+    final isRejection = ProfilePhotoReplyResolver.isRejectionPhrase(text);
+
+    ProfilePhotoReplyResult photoReply;
+    if (isRejection &&
+        _activePhotoQueryText != null &&
+        _activePhotoQueryText!.isNotEmpty) {
+      photoReply = await ProfilePhotoReplyResolver.resolve(
+        userText: text,
+        cache: archive,
+        repository: _repository,
+        excludePhotoIds: _shownPhotoIdsForActiveQuery,
+        isRejection: true,
+        previousQueryText: _activePhotoQueryText,
+      );
+    } else {
+      if (ProfilePhotoReplyResolver.hasPhotoIntent(text)) {
+        _activePhotoQueryText = text;
+        _shownPhotoIdsForActiveQuery.clear();
+        _clearVideoBrowseSession();
+      }
+      photoReply = await ProfilePhotoReplyResolver.resolve(
+        userText: text,
+        cache: archive,
+        repository: _repository,
+        isRejection: isRejection,
+      );
+      if (photoReply.queryText != null && photoReply.photoRequested) {
+        _activePhotoQueryText = photoReply.queryText;
+      }
+    }
+
+    if (photoReply.status == ProfilePhotoReplyStatus.matched) {
+      try {
+        await _emitProfilePhotos(photoReply.photos);
+        _shownPhotoIdsForActiveQuery
+            .addAll(photoReply.photos.map((p) => p.id));
+        await _extractRelationsFromRecentChat(sourceMessageId: userMessageId);
+      } finally {
+        _isSending = false;
+        notifyListeners();
+      }
+      return;
+    }
+
+    if (isRejection &&
+        photoReply.status == ProfilePhotoReplyStatus.exhausted) {
+      await _emitAssistantReplyAndFinish(
+        content: '相关照片都给您看过了。您可以说要看哪一类，比如「家庭照片」或家里人名字。',
+        sourceMessageId: userMessageId,
+      );
+      return;
+    }
+
+    await _emitAssistantReplyAndFinish(
+      content: _photoNotFoundReply,
+      sourceMessageId: userMessageId,
+      extractRelations: false,
+    );
   }
 
   Future<void> _insertSupportCardIfNeeded(String latestUserText) async {
@@ -673,25 +1016,32 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  /// 仅收录**用户（老人）**的文本发言，不包含助手回复，供抽取模型使用，避免把模型幻觉写进档案。
+  /// 收录用户文本与附件说明，供抽取模型使用。
   List<Map<String, String>> _buildExtractionTranscript() {
-    final userLines = _messages
-        .where(
-          (m) => m.isUser && m.kind == ChatMessageKind.text,
-        )
-        .toList();
+    final userLines = _messages.where((m) {
+      if (!m.isUser) return false;
+      if (m.kind == ChatMessageKind.text) return true;
+      if (m.kind == ChatMessageKind.attachment) return true;
+      return false;
+    }).toList();
     const maxUserTurns = 28;
     final recent = userLines.length > maxUserTurns
         ? userLines.sublist(userLines.length - maxUserTurns)
         : userLines;
-    return recent
-        .map(
-          (m) => <String, String>{
-            'role': 'user',
-            'content': m.content,
-          },
-        )
-        .toList();
+    return recent.map((m) {
+      var content = m.content;
+      if (m.kind == ChatMessageKind.attachment) {
+        final mediaLabel = m.attachmentMediaType ==
+                ChatAttachmentMediaType.video
+            ? '视频'
+            : '照片';
+        content = '[上传了$mediaLabel] $content';
+      }
+      return <String, String>{
+        'role': 'user',
+        'content': content,
+      };
+    }).toList();
   }
 
   Future<String> _userProfileSummaryForLlm() async {
@@ -1034,6 +1384,9 @@ class ChatProvider extends ChangeNotifier {
         'cue_label': message.cueLabel,
         'image_path': message.imagePath,
         'profile_photo_id': message.profilePhotoId,
+        'attachment_media_type': message.attachmentMediaType?.name,
+        'video_path': message.videoPath,
+        'attachment_id': message.attachmentId,
       }),
     });
   }
@@ -1055,6 +1408,14 @@ class ChatProvider extends ChangeNotifier {
       (value) => value.name == kindName,
       orElse: () => ChatMessageKind.text,
     );
+    ChatAttachmentMediaType? attachmentMediaType;
+    final mediaTypeRaw = extra['attachment_media_type'] as String?;
+    if (mediaTypeRaw != null) {
+      attachmentMediaType = ChatAttachmentMediaType.values.firstWhere(
+        (value) => value.name == mediaTypeRaw,
+        orElse: () => ChatAttachmentMediaType.image,
+      );
+    }
     return ChatMessage(
       id: row['id'] as String,
       content: row['content'] as String? ?? '',
@@ -1069,6 +1430,9 @@ class ChatProvider extends ChangeNotifier {
           .toList(),
       imagePath: extra['image_path'] as String?,
       profilePhotoId: extra['profile_photo_id'] as String?,
+      attachmentMediaType: attachmentMediaType,
+      videoPath: extra['video_path'] as String?,
+      attachmentId: extra['attachment_id'] as String?,
     );
   }
 

@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/services/chat_attachment_service.dart';
+import '../../ui/widgets/media_viewer.dart';
 import '../../config/theme.dart';
 import '../../core/narration/narration_player.dart';
 import '../../core/voice_input/voice_input.dart';
@@ -44,6 +46,19 @@ class _HomeScreenState extends State<HomeScreen> {
   /// `vivo`：录完上传本地代理；`system`：系统听写。
   String _speechEngine = 'vivo';
 
+  int _memoryRefreshToken = 0;
+
+  /// 已选但未发送的附件（需点「发送」才进入对话）。
+  PickedChatAttachment? _pendingAttachment;
+
+  @override
+  void initState() {
+    super.initState();
+    _messageController.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
+
   @override
   void dispose() {
     unawaited(VoiceInputService.cancelForDispose());
@@ -51,15 +66,97 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  void _onPreEntryDataChanged() {
+    context.read<ChatProvider>().reloadUserArchive();
+    setState(() => _memoryRefreshToken++);
+  }
+
   void _showView(_AppView view) {
     setState(() => _view = view);
   }
 
-  Future<void> _sendTypedMessage() async {
+  Future<void> _onSendTap() async {
+    final chat = context.read<ChatProvider>();
+    if (chat.isSending) return;
+
     final text = _messageController.text.trim();
-    if (text.isEmpty) return;
+    final pending = _pendingAttachment;
+    if (pending == null && text.isEmpty) return;
+
     _messageController.clear();
-    await context.read<ChatProvider>().sendMessage(text);
+    if (pending != null) {
+      setState(() => _pendingAttachment = null);
+      await chat.sendAttachment(
+        pending,
+        caption: text.isEmpty ? null : text,
+      );
+    } else {
+      await chat.sendMessage(text);
+    }
+  }
+
+  Future<void> _onAttachmentTap() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final chat = context.read<ChatProvider>();
+    if (chat.isSending) return;
+
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppTheme.surface1,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  '添加附件',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.text,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  leading: const Icon(Icons.photo_outlined, color: AppTheme.primaryDeep),
+                  title: const Text('选择照片', style: TextStyle(fontSize: 20)),
+                  onTap: () => Navigator.pop(context, 'image'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.videocam_outlined, color: AppTheme.primaryDeep),
+                  title: const Text('选择视频', style: TextStyle(fontSize: 20)),
+                  onTap: () => Navigator.pop(context, 'video'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (!mounted || choice == null) return;
+
+    try {
+      final picked = choice == 'video'
+          ? await ChatAttachmentService.pickVideo()
+          : await ChatAttachmentService.pickImage();
+      if (!mounted || picked == null) return;
+
+      setState(() {
+        _pendingAttachment = picked;
+        _keyboardOpen = true;
+      });
+    } catch (e) {
+      final message = e is ChatAttachmentException ? e.message : '附件选择失败：$e';
+      messenger?.showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    }
   }
 
   void _dismissKeyboardInput({bool closeInputPanel = false}) {
@@ -232,7 +329,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       _TypingPanel(
                         controller: _messageController,
                         isSending: chat.isSending,
-                        onSend: _sendTypedMessage,
+                        pendingAttachment: _pendingAttachment,
+                        onRemoveAttachment: () {
+                          setState(() => _pendingAttachment = null);
+                        },
+                        onSend: _onSendTap,
                       ),
                       const SizedBox(height: 8),
                     ],
@@ -245,6 +346,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         setState(() => _keyboardOpen = !_keyboardOpen);
                       },
                       onVoiceTap: _onVoiceButtonTap,
+                      onAttachmentTap: _onAttachmentTap,
                     ),
                     const SizedBox(height: 6),
                   ],
@@ -319,7 +421,7 @@ class _HomeScreenState extends State<HomeScreen> {
         return const _HomeCompanionView(key: ValueKey('home'));
       case _AppView.memory:
         return _MemoryBookView(
-          key: ValueKey('memory-${chat.activeUserId}'),
+          key: ValueKey('memory-${chat.activeUserId}-$_memoryRefreshToken'),
           ownerUserId: chat.activeUserId,
           onBack: () => _showView(_AppView.home),
         );
@@ -345,7 +447,11 @@ class _HomeScreenState extends State<HomeScreen> {
         return DataPreentryScreen(
           key: ValueKey('pre-entry-${chat.activeUserId}'),
           ownerUserId: chat.activeUserId,
-          onBack: () => _showView(_AppView.settings),
+          onBack: () {
+            _onPreEntryDataChanged();
+            _showView(_AppView.settings);
+          },
+          onDataChanged: _onPreEntryDataChanged,
         );
     }
   }
@@ -611,19 +717,25 @@ class _ChatMessageView extends StatelessWidget {
     final isPhoto = message.kind == ChatMessageKind.photo &&
         message.imagePath != null &&
         message.imagePath!.isNotEmpty;
+    final isAttachment = message.hasMediaAttachment;
 
     final Widget content = isPrompt
         ? _PromptCard(message: message, onOptionTap: onOptionTap)
-        : isPhoto
-            ? _ChatPhotoBubble(message: message)
-            : _MessageBubble(
-                text: message.content,
-                isUser: message.isUser,
-                isError: message.kind == ChatMessageKind.error,
-              );
+        : isAttachment
+            ? _ChatAttachmentBubble(message: message)
+            : isPhoto
+                ? _ChatPhotoBubble(message: message)
+                : _MessageBubble(
+                    text: message.content,
+                    isUser: message.isUser,
+                    isError: message.kind == ChatMessageKind.error,
+                  );
 
     if (message.isUser) {
-      return content;
+      return Align(
+        alignment: Alignment.centerRight,
+        child: content,
+      );
     }
 
     return Padding(
@@ -747,6 +859,73 @@ class _PromptCard extends StatelessWidget {
   }
 }
 
+class _ChatAttachmentBubble extends StatelessWidget {
+  const _ChatAttachmentBubble({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final isVideo =
+        message.attachmentMediaType == ChatAttachmentMediaType.video;
+    final isUser = message.isUser;
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 280),
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: isUser ? AppTheme.primarySoft : AppTheme.surface2,
+        borderRadius: BorderRadius.only(
+          topLeft: const Radius.circular(AppTheme.radiusBubble),
+          topRight: const Radius.circular(AppTheme.radiusBubble),
+          bottomLeft: Radius.circular(isUser ? AppTheme.radiusBubble : 6),
+          bottomRight: Radius.circular(isUser ? 6 : AppTheme.radiusBubble),
+        ),
+        border: Border.all(color: AppTheme.borderHairline, width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: SizedBox(
+              height: 200,
+              width: double.infinity,
+              child: TappableMediaThumbnail(
+                path: isVideo ? message.videoPath! : message.imagePath!,
+                isVideo: isVideo,
+                title: message.content.trim().isNotEmpty ? message.content : null,
+                child: isVideo
+                    ? _MemoryVideoPreview(path: message.videoPath!)
+                    : _MemoryPhotoImage(
+                        photo: ProfilePhotoModel(
+                          id: message.profilePhotoId ?? message.id,
+                          ownerUserId: '',
+                          filePath: message.imagePath!,
+                        ),
+                        interactive: false,
+                      ),
+              ),
+            ),
+          ),
+          if (message.content.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              message.content,
+              style: TextStyle(
+                color: isUser ? Colors.white : AppTheme.text,
+                fontSize: 19,
+                height: 1.4,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class _ChatPhotoBubble extends StatelessWidget {
   const _ChatPhotoBubble({required this.message});
 
@@ -774,11 +953,17 @@ class _ChatPhotoBubble extends StatelessWidget {
               child: SizedBox(
                 height: 200,
                 width: double.infinity,
-                child: _MemoryPhotoImage(
-                  photo: ProfilePhotoModel(
-                    id: message.profilePhotoId ?? message.id,
-                    ownerUserId: '',
-                    filePath: path,
+                child: TappableMediaThumbnail(
+                  path: path,
+                  isVideo: false,
+                  title: message.content.trim().isNotEmpty ? message.content : null,
+                  child: _MemoryPhotoImage(
+                    photo: ProfilePhotoModel(
+                      id: message.profilePhotoId ?? message.id,
+                      ownerUserId: '',
+                      filePath: path,
+                    ),
+                    interactive: false,
                   ),
                 ),
               ),
@@ -2553,12 +2738,29 @@ class _AlbumTypeBadge extends StatelessWidget {
 }
 
 class _MemoryPhotoImage extends StatelessWidget {
-  const _MemoryPhotoImage({required this.photo});
+  const _MemoryPhotoImage({
+    required this.photo,
+    this.interactive = true,
+  });
 
   final ProfilePhotoModel photo;
+  final bool interactive;
 
   @override
   Widget build(BuildContext context) {
+    final content = photo.isVideo
+        ? _MemoryVideoPreview(path: photo.filePath)
+        : _buildImage();
+    if (!interactive) return content;
+    return TappableMediaThumbnail(
+      path: photo.filePath,
+      isVideo: photo.isVideo,
+      title: photo.caption,
+      child: content,
+    );
+  }
+
+  Widget _buildImage() {
     final path = photo.filePath;
     if (path.startsWith('data:image/')) {
       return Image.network(
@@ -2574,6 +2776,52 @@ class _MemoryPhotoImage extends StatelessWidget {
       File(path),
       fit: BoxFit.cover,
       errorBuilder: (_, __, ___) => const _MemoryPhotoFallback(),
+    );
+  }
+}
+
+class _MemoryVideoPreview extends StatelessWidget {
+  const _MemoryVideoPreview({required this.path});
+
+  final String path;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF1E2430),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.18),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.play_arrow_rounded,
+                color: Colors.white,
+                size: 36,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text(
+                path.split(RegExp(r'[/\\]')).last,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -3433,12 +3681,21 @@ class _TypingPanel extends StatelessWidget {
   const _TypingPanel({
     required this.controller,
     required this.isSending,
+    required this.pendingAttachment,
+    required this.onRemoveAttachment,
     required this.onSend,
   });
 
   final TextEditingController controller;
   final bool isSending;
+  final PickedChatAttachment? pendingAttachment;
+  final VoidCallback onRemoveAttachment;
   final VoidCallback onSend;
+
+  bool get _canSend {
+    if (isSending) return false;
+    return controller.text.trim().isNotEmpty || pendingAttachment != null;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3449,62 +3706,155 @@ class _TypingPanel extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
         border: Border.all(color: AppTheme.borderHairline, width: 1),
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
         children: [
+          if (pendingAttachment != null) ...[
+            _PendingAttachmentChip(
+              attachment: pendingAttachment!,
+              onRemove: onRemoveAttachment,
+            ),
+            const SizedBox(height: 6),
+          ],
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  enabled: !isSending,
+                  minLines: 1,
+                  maxLines: 4,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (_) {
+                    if (_canSend) onSend();
+                  },
+                  style: const TextStyle(
+                    fontSize: 22,
+                    height: 1.4,
+                    fontWeight: FontWeight.w500,
+                    color: AppTheme.text,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: pendingAttachment == null
+                        ? '输入想说的话'
+                        : '可以补充说明（可选）',
+                    hintStyle: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w400,
+                      color: AppTheme.textCaption,
+                    ),
+                    filled: false,
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 12,
+                    ),
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    disabledBorder: InputBorder.none,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              SizedBox(
+                height: 60,
+                child: FilledButton(
+                  onPressed: _canSend ? onSend : null,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppTheme.primary,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 18),
+                    shape: RoundedRectangleBorder(
+                      borderRadius:
+                          BorderRadius.circular(AppTheme.radiusMedium),
+                    ),
+                  ),
+                  child: Text(
+                    isSending ? '等待' : '发送',
+                    style: const TextStyle(
+                      fontSize: 21,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PendingAttachmentChip extends StatelessWidget {
+  const _PendingAttachmentChip({
+    required this.attachment,
+    required this.onRemove,
+  });
+
+  final PickedChatAttachment attachment;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final isVideo = attachment.isVideo;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(8, 8, 4, 8),
+      decoration: BoxDecoration(
+        color: AppTheme.surface2,
+        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+        border: Border.all(color: AppTheme.borderHairline),
+      ),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: SizedBox(
+              width: 56,
+              height: 56,
+              child: isVideo
+                  ? const ColoredBox(
+                      color: Color(0xFF1E2430),
+                      child: Icon(
+                        Icons.videocam_rounded,
+                        color: Colors.white70,
+                      ),
+                    )
+                  : attachment.stablePath.startsWith('data:image/')
+                      ? Image.network(
+                          attachment.stablePath,
+                          fit: BoxFit.cover,
+                        )
+                      : kIsWeb
+                          ? const Icon(Icons.image_outlined)
+                          : Image.file(
+                              File(attachment.stablePath),
+                              fit: BoxFit.cover,
+                            ),
+            ),
+          ),
+          const SizedBox(width: 10),
           Expanded(
-            child: TextField(
-              controller: controller,
-              enabled: !isSending,
-              minLines: 1,
-              maxLines: 4,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (_) => onSend(),
+            child: Text(
+              isVideo
+                  ? '已选视频：${attachment.originalName}'
+                  : '已选照片：${attachment.originalName}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                fontSize: 22,
-                height: 1.4,
+                fontSize: 18,
                 fontWeight: FontWeight.w500,
                 color: AppTheme.text,
               ),
-              decoration: const InputDecoration(
-                hintText: '输入想说的话',
-                hintStyle: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w400,
-                  color: AppTheme.textCaption,
-                ),
-                filled: false,
-                isDense: true,
-                contentPadding:
-                    EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                border: InputBorder.none,
-                enabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                disabledBorder: InputBorder.none,
-              ),
             ),
           ),
-          const SizedBox(width: 6),
-          SizedBox(
-            height: 60,
-            child: FilledButton(
-              onPressed: isSending ? null : onSend,
-              style: FilledButton.styleFrom(
-                backgroundColor: AppTheme.primary,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 18),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
-                ),
-              ),
-              child: Text(
-                isSending ? '等待' : '发送',
-                style: const TextStyle(
-                  fontSize: 21,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
+          IconButton(
+            tooltip: '移除',
+            onPressed: onRemove,
+            icon: const Icon(Icons.close_rounded, color: AppTheme.textSoft),
           ),
         ],
       ),
@@ -3520,6 +3870,7 @@ class _BottomVoiceBar extends StatelessWidget {
     required this.isRecognizing,
     required this.onKeyboardTap,
     required this.onVoiceTap,
+    required this.onAttachmentTap,
   });
 
   final bool keyboardOpen;
@@ -3528,6 +3879,7 @@ class _BottomVoiceBar extends StatelessWidget {
   final bool isRecognizing;
   final VoidCallback onKeyboardTap;
   final VoidCallback onVoiceTap;
+  final VoidCallback onAttachmentTap;
 
   @override
   Widget build(BuildContext context) {
@@ -3625,7 +3977,7 @@ class _BottomVoiceBar extends StatelessWidget {
             label: '附件',
             icon: Icons.add_rounded,
             active: false,
-            onTap: () {},
+            onTap: isSending ? () {} : onAttachmentTap,
           ),
         ],
       ),

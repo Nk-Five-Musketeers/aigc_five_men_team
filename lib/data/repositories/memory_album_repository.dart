@@ -4,6 +4,7 @@ import '../../core/narration/narration_text.dart';
 import '../local_db/local_database.dart';
 import '../models/memory_album.dart';
 import '../models/profile_photo.dart';
+import '../models/profile_video.dart';
 
 class MemoryAlbumDraft {
   const MemoryAlbumDraft({
@@ -31,6 +32,9 @@ class MemoryAlbumRepository {
     final dailyLifeRecords =
         await LocalDatabase.listDailyLifeRecordsForUser(ownerUserId, limit: 12);
     final photos = await LocalDatabase.listProfilePhotosForUser(ownerUserId);
+    final videos = await LocalDatabase.listProfileVideosForUser(ownerUserId);
+    final imageOnlyPhotos = photos.where((photo) => !photo.isVideo).toList();
+    final allMedia = [...imageOnlyPhotos, ..._photosFromVideos(videos)];
 
     final generationInput = MemoryAlbumComposer.buildGenerationInput(
       ownerUserId: ownerUserId,
@@ -38,7 +42,7 @@ class MemoryAlbumRepository {
       familyMembers: familyMembers,
       memoryEvents: memoryEvents,
       dailyLifeRecords: dailyLifeRecords,
-      photos: photos,
+      photos: allMedia,
     );
     final album = MemoryAlbumComposer.compose(
       ownerUserId: ownerUserId,
@@ -46,14 +50,36 @@ class MemoryAlbumRepository {
       familyMembers: familyMembers,
       memoryEvents: memoryEvents,
       dailyLifeRecords: dailyLifeRecords,
-      photos: photos,
+      photos: allMedia,
     );
 
     return MemoryAlbumDraft(
       album: album,
-      photos: photos,
+      photos: allMedia,
       generationInput: generationInput,
     );
+  }
+
+  static List<ProfilePhotoModel> _photosFromVideos(
+    List<ProfileVideoModel> videos,
+  ) {
+    return videos
+        .map(
+          (video) => ProfilePhotoModel(
+            id: video.id,
+            ownerUserId: video.ownerUserId,
+            filePath: video.filePath,
+            category: ProfilePhotoCategory.memory,
+            caption: video.caption,
+            metadata: {
+              'source': 'chat',
+              'media_type': 'video',
+              'message_id': video.messageId,
+            },
+            createdAt: video.createdAt,
+          ),
+        )
+        .toList();
   }
 }
 
@@ -604,12 +630,14 @@ content 和 narration_text 必须是可以直接朗读的故事正文，不能�
 
   static ProfilePhotoModel? _pickCoverPhoto(List<ProfilePhotoModel> photos) {
     if (photos.isEmpty) return null;
+    final images = photos.where((photo) => !photo.isVideo).toList();
+    if (images.isEmpty) return photos.first;
     final avatar =
-        photos.where((photo) => photo.category == ProfilePhotoCategory.avatar);
+        images.where((photo) => photo.category == ProfilePhotoCategory.avatar);
     if (avatar.isNotEmpty) return avatar.first;
-    final favorite = photos.where((photo) => photo.isFavorite);
+    final favorite = images.where((photo) => photo.isFavorite);
     if (favorite.isNotEmpty) return favorite.first;
-    return photos.first;
+    return images.first;
   }
 
   static String _albumSubtitle(
@@ -864,6 +892,7 @@ content 和 narration_text 必须是可以直接朗读的故事正文，不能�
   static Map<String, dynamic> _photoInputRow(ProfilePhotoModel photo) => {
         'photo_id': photo.id,
         'category': _photoCategoryLabel(photo.category),
+        'media_type': photo.isVideo ? 'video' : 'image',
         'visible_content': _photoVisibleContent(photo),
         'people': _text(photo.peopleInvolved),
         'scene': _text(photo.location),
@@ -878,7 +907,10 @@ content 和 narration_text 必须是可以直接朗读的故事正文，不能�
 
   static String _photoVisibleContent(ProfilePhotoModel photo) {
     final caption = _text(photo.caption);
-    if (caption.isNotEmpty) return caption;
+    if (caption.isNotEmpty) {
+      return photo.isVideo ? '视频：$caption' : caption;
+    }
+    if (photo.isVideo) return '一段家庭视频';
     return [
       _text(photo.photoTime),
       _text(photo.location),

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../data/models/photo_intent_plan.dart';
 import '../data/models/profile_photo.dart';
+import 'profile_video_reply.dart';
 import '../data/repositories/chat_repository.dart';
 import 'user_archive_cache.dart';
 
@@ -36,7 +37,7 @@ class ProfilePhotoReplyResult {
 class ProfilePhotoReplyResolver {
   ProfilePhotoReplyResolver._();
 
-  static const _maxPhotosPerBatch = 24;
+  static const _maxPhotosPerBatch = 6;
 
   static final _intentPattern = RegExp(
     r'照片|相片|图片|相册|图|看一下|看看|给我看|瞧瞧|翻出|找出来|有没有.*照|照.*看看|想看|输出|展示',
@@ -49,8 +50,12 @@ class ProfilePhotoReplyResolver {
   static bool isRejectionPhrase(String text) =>
       _rejectionPattern.hasMatch(text.trim());
 
-  static bool hasPhotoIntent(String text) =>
-      text.trim().isNotEmpty && _intentPattern.hasMatch(text.trim());
+  static bool hasPhotoIntent(String text) {
+    final t = text.trim();
+    if (t.isEmpty) return false;
+    if (ProfileVideoReplyResolver.hasVideoIntent(t)) return false;
+    return _intentPattern.hasMatch(t);
+  }
 
   static String categoryLabel(ProfilePhotoCategory c) =>
       ProfilePhotoCategoryLabels.label(c);
@@ -100,7 +105,7 @@ class ProfilePhotoReplyResolver {
             previousUserQuery: previousQueryText,
             recentlyShownPhotoIds: excludePhotoIds.toList(),
           )
-          .timeout(const Duration(seconds: 60));
+          .timeout(const Duration(seconds: 30));
       debugPrint(
         '[PhotoReply] LLM plan want=${plan.wantPhotos} '
         'inc=${plan.includeFilters.length} exc=${plan.excludeFilters.length} '
@@ -347,6 +352,6 @@ class ProfilePhotoReplyResolver {
 
     if (t.contains('几张') || t.contains('多张')) return cap < 3 ? cap : 3;
 
-    return cap;
+    return 1;
   }
 }

@@ -225,3 +225,13 @@ aigc_five_men_team/
 | 默认模型 | `Volc-DeepSeek-V3.2`（`lib/config/constants.dart` 与代理默认一致） |
 
 按本文 **第二节** 顺序操作：安装 Flutter 与 Python → `flutter pub get` → 设置密钥并启动 `local_chat_server.py` → `flutter run`，即可在拿到团队密钥后从零跑通全流程。
+
+---
+
+## 六、工程化结构说明
+
+- `lib/ui/screens/home_screen.dart` 保留为主页面入口，具体实现拆分到 `lib/ui/screens/home/`。
+- `lib/ui/screens/data_preentry_screen.dart` 保留为数据预录入入口，具体实现拆分到 `lib/ui/screens/data_preentry/`。
+- `lib/data/local_db/local_database.dart` 保留原有 `LocalDatabase` 公开 API，配套模型拆到同目录 part 文件。
+- `lib/data/repositories/memory_album_repository.dart` 保留回忆册仓库入口，组合逻辑拆到 `memory_album_composer.dart`。
+- 未接入运行路径的 `_scaffold` 占位代码和过程文档已归档到 `docs/archive/`，清理依据见 `docs/cleanup-candidates.md`。

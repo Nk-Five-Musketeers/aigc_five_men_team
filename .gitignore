@@ -6,6 +6,9 @@ build/
 .flutter-plugins
 .flutter-plugins-dependencies
 .metadata
+windows/flutter/ephemeral/
+macos/Flutter/ephemeral/
+linux/flutter/ephemeral/
 
 # IDE
 .idea/

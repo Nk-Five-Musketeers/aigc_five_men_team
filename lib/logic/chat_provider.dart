@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../config/constants.dart';
 import '../core/services/chat_attachment_service.dart';
+import '../core/utils/caption_text.dart';
 import '../data/models/chat_message.dart';
 import '../data/models/extracted_relation_hint.dart';
 import '../data/models/memory_extraction_payload.dart';
@@ -244,7 +245,7 @@ class ChatProvider extends ChangeNotifier {
           ? ProfilePhotoStorageType.webLocal
           : ProfilePhotoStorageType.filePath,
       category: ProfilePhotoCategory.memory,
-      caption: displayText,
+      caption: cleanAlbumCaption(displayText),
       metadata: {
         'source': 'chat',
         'media_type': 'image',
@@ -304,7 +305,7 @@ class ChatProvider extends ChangeNotifier {
       ownerUserId: _activeUserId,
       filePath: picked.stablePath,
       category: ProfileVideoCategory.memory,
-      caption: displayText,
+      caption: cleanAlbumCaption(displayText),
       messageId: messageId,
       mime: picked.mimeType,
       metadata: {

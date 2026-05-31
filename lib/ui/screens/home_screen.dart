@@ -15,6 +15,8 @@ import '../../data/local_db/local_database.dart';
 import '../../data/repositories/memory_album_repository.dart';
 import '../../logic/chat_provider.dart';
 import 'data_preentry_screen.dart';
+import '../widgets/chat_read_aloud_action.dart';
+import '../widgets/read_aloud_settings_controls.dart';
 
 enum _AppView { home, memory, recent, preEntry, settings }
 
@@ -634,7 +636,15 @@ class _ChatMessageView extends StatelessWidget {
         children: [
           const _LetterAvatar(letter: '拾'),
           const SizedBox(width: 8),
-          Expanded(child: content),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                content,
+                ChatReadAloudAction(message: message),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -2185,6 +2195,8 @@ class _SettingsView extends StatelessWidget {
                 ),
               ],
             ),
+            const _SettingsRowDivider(),
+            const ReadAloudSettingsControls(),
           ],
         ),
         const SizedBox(height: 20),

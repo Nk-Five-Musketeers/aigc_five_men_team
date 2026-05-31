@@ -17,6 +17,7 @@ HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
 CHAT_API_URL = "https://api-ai.vivo.com.cn/v1/chat/completions"
 DEFAULT_MODEL = "Volc-DeepSeek-V3.2"
+DEFAULT_TTS_APP_ID = "2026594139"
 
 
 class ChatProxyHandler(BaseHTTPRequestHandler):
@@ -110,13 +111,21 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if urllib.parse.urlparse(self.path).path == "/health":
+            app_key = os.getenv("VIVO_APP_KEY") or os.getenv("APP_KEY")
+            app_id = (
+                os.getenv("VIVO_APP_ID")
+                or os.getenv("APP_ID")
+                or DEFAULT_TTS_APP_ID
+            )
             self._send_json(
                 200,
                 {
                     "ok": True,
-                    "has_server_key": bool(os.getenv("VIVO_APP_KEY") or os.getenv("APP_KEY")),
+                    "has_server_key": bool(app_key),
                     "local_speech_nlp": True,
-                    "vivo_asr": bool(os.getenv("VIVO_APP_KEY") or os.getenv("APP_KEY")),
+                    "vivo_asr": bool(app_key),
+                    "vivo_tts": bool(app_key),
+                    "vivo_tts_app_id": app_id,
                 },
             )
             return
@@ -209,6 +218,46 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def _handle_tts_synthesize(self) -> None:
+        req_data, err = self._read_json_body()
+        if err:
+            self._send_json(400, {"error": err})
+            return
+        assert req_data is not None
+
+        app_key = os.getenv("VIVO_APP_KEY") or os.getenv("APP_KEY")
+        if not app_key:
+            self._send_json(
+                400,
+                {"error": "Missing AppKey. Set VIVO_APP_KEY or APP_KEY for vivo TTS."},
+            )
+            return
+
+        app_id = (
+            os.getenv("VIVO_APP_ID")
+            or os.getenv("APP_ID")
+            or DEFAULT_TTS_APP_ID
+        )
+        try:
+            from speech_synthesis import VivoTTSError
+            from tts_http import TTSRequestError, synthesize_request
+
+            wav_bytes = synthesize_request(
+                req_data,
+                app_key=app_key,
+                app_id=app_id,
+            )
+            self._send_bytes(200, wav_bytes, "audio/wav")
+        except TTSRequestError as exc:
+            self._send_json(400, {"error": "invalid_tts_request", "detail": str(exc)})
+        except VivoTTSError as exc:
+            self._send_json(
+                502,
+                {"error": "vivo_tts_failed", "code": exc.code, "detail": exc.desc},
+            )
+        except Exception as exc:
+            self._send_json(500, {"error": "tts_synthesize_failed", "detail": str(exc)})
+
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self._send_cors_headers()
@@ -221,6 +270,9 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/asr/transcribe":
             self._handle_asr_transcribe()
+            return
+        if path == "/api/tts/synthesize":
+            self._handle_tts_synthesize()
             return
         if path != "/api/chat":
             self._discard_request_body()

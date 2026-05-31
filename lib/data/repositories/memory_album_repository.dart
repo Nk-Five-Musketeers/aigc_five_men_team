@@ -1,8 +1,10 @@
 import 'dart:convert';
 
+import '../../core/narration/narration_text.dart';
 import '../local_db/local_database.dart';
 import '../models/memory_album.dart';
 import '../models/profile_photo.dart';
+import '../models/profile_video.dart';
 
 class MemoryAlbumDraft {
   const MemoryAlbumDraft({
@@ -30,6 +32,9 @@ class MemoryAlbumRepository {
     final dailyLifeRecords =
         await LocalDatabase.listDailyLifeRecordsForUser(ownerUserId, limit: 12);
     final photos = await LocalDatabase.listProfilePhotosForUser(ownerUserId);
+    final videos = await LocalDatabase.listProfileVideosForUser(ownerUserId);
+    final imageOnlyPhotos = photos.where((photo) => !photo.isVideo).toList();
+    final allMedia = [...imageOnlyPhotos, ..._photosFromVideos(videos)];
 
     final generationInput = MemoryAlbumComposer.buildGenerationInput(
       ownerUserId: ownerUserId,
@@ -37,7 +42,7 @@ class MemoryAlbumRepository {
       familyMembers: familyMembers,
       memoryEvents: memoryEvents,
       dailyLifeRecords: dailyLifeRecords,
-      photos: photos,
+      photos: allMedia,
     );
     final album = MemoryAlbumComposer.compose(
       ownerUserId: ownerUserId,
@@ -45,19 +50,52 @@ class MemoryAlbumRepository {
       familyMembers: familyMembers,
       memoryEvents: memoryEvents,
       dailyLifeRecords: dailyLifeRecords,
-      photos: photos,
+      photos: allMedia,
     );
 
     return MemoryAlbumDraft(
       album: album,
-      photos: photos,
+      photos: allMedia,
       generationInput: generationInput,
     );
+  }
+
+  static List<ProfilePhotoModel> _photosFromVideos(
+    List<ProfileVideoModel> videos,
+  ) {
+    return videos
+        .map(
+          (video) => ProfilePhotoModel(
+            id: video.id,
+            ownerUserId: video.ownerUserId,
+            filePath: video.filePath,
+            category: ProfilePhotoCategory.memory,
+            caption: video.caption,
+            metadata: {
+              'source': 'chat',
+              'media_type': 'video',
+              'message_id': video.messageId,
+            },
+            createdAt: video.createdAt,
+          ),
+        )
+        .toList();
   }
 }
 
 class MemoryAlbumComposer {
   MemoryAlbumComposer._();
+
+  static const String _audiobookPrompt = '''
+你是一位温柔的回忆故事撰写者，正在为一位老人生成一份可以边看边听的回忆图鉴。
+这份图鉴不是普通资料卡，也不是简历，而是一份适合被朗读出来的回忆故事。
+语言要适合朗读，句子不要太长；每段最好控制在 2 到 4 句话，方便前端逐句高亮。
+把姓名、籍贯、家庭关系、人生经历自然穿插进叙事里，每张照片都要成为一个故事入口。
+文字要温暖、克制、真实，不要过度煽情；不要编造没有提供的事实，信息不足时少写，不要猜测。
+章节之间要有过渡语，让整本图鉴听起来像一段连续的人生故事。
+输出 JSON 需要包含 album_title、album_subtitle、opening、chapters、ending，并在每个 item 中给出 narration_text 与 sentences，供前端逐句朗读、高亮和自动跟随。
+content 和 narration_text 必须是可以直接朗读的故事正文，不能出现写作指导、资料说明、补充提醒、占位提示或任何元叙述。
+''';
 
   static Map<String, dynamic> buildGenerationInput({
     required String ownerUserId,
@@ -141,6 +179,15 @@ class MemoryAlbumComposer {
         'tone': '温暖、自然、娓娓道来',
         'target_reader': '老人本人和家属',
         'length': '中等',
+        'mode': '听小说 / 有声书',
+        'narration_prompt': _audiobookPrompt,
+        'sentence_length': '句子不要太长，每段 2 到 4 句话',
+        'frontend_support': [
+          '逐句朗读',
+          '当前句高亮',
+          '自动滚动或翻页',
+          '点击句子从该句开始',
+        ],
         'allow_rebuild_album': true,
         'output_language': '中文',
         'source': 'local_pre_entry',
@@ -195,12 +242,12 @@ class MemoryAlbumComposer {
       chapters.add(profileChapter);
     }
 
-    final familyChapter = _buildFamilyChapter(familyMembers);
+    final familyChapter = _buildFamilyChapter(familyMembers, elderName);
     if (familyChapter.items.isNotEmpty) {
       chapters.add(familyChapter);
     }
 
-    final lifeChapter = _buildLifeChapter(memoryEvents, photos);
+    final lifeChapter = _buildLifeChapter(memoryEvents, photos, elderName);
     if (lifeChapter.items.isNotEmpty) {
       chapters.add(lifeChapter);
     }
@@ -216,7 +263,7 @@ class MemoryAlbumComposer {
       chapters.add(photoChapter);
     }
 
-    final dailyChapter = _buildDailyChapter(dailyLifeRecords, user);
+    final dailyChapter = _buildDailyChapter(dailyLifeRecords, user, elderName);
     if (dailyChapter.items.isNotEmpty) {
       chapters.add(dailyChapter);
     }
@@ -224,7 +271,7 @@ class MemoryAlbumComposer {
     final timeline = _buildTimeline(memoryEvents, photos);
     final addedParts = chapters.map((chapter) => chapter.chapterTitle).toList();
 
-    return MemoryAlbum(
+    final album = MemoryAlbum(
       albumId: 'album_$ownerUserId',
       albumTitle: '$elderName的回忆图鉴',
       albumSubtitle: _albumSubtitle(user, familyMembers, memoryEvents, photos),
@@ -246,7 +293,7 @@ class MemoryAlbumComposer {
       chapters: chapters,
       timeline: timeline,
       ending: AlbumText(
-        title: '还可以继续补上',
+        title: '故事还在继续',
         content: _endingText(elderName, missing),
       ),
       familyQuestions: _dedupeQuestions(familyQuestions).take(8).toList(),
@@ -257,7 +304,9 @@ class MemoryAlbumComposer {
         possibleConflicts: const <String>[],
         missingInformation: missing,
       ),
+      narration: const MemoryAlbumNarration(segments: <NarrationSegment>[]),
     );
+    return album.copyWith(narration: buildAlbumNarration(album));
   }
 
   static MemoryAlbumChapter _buildProfileChapter(
@@ -279,12 +328,12 @@ class MemoryAlbumComposer {
         itemType: 'text_card',
         title: '日子里的样子',
         content: [
-          if (career.isNotEmpty) '$elderName曾经的职业经历里，有“$career”。',
-          if (hobbies.isNotEmpty) '平时喜欢的事里，有“$hobbies”。',
-          if (food.isNotEmpty) '饮食习惯里也有熟悉的味道：$food。',
-          if (personality.isNotEmpty) '说起性格，可以记着“$personality”。',
-          if (dialect.isNotEmpty) '他说话里带着$dialect的亲切感。',
-          if (care.isNotEmpty) '平时照看时，也记得：$care。',
+          if (career.isNotEmpty) '$elderName的岁月里，有一段和$career相连的日子。',
+          if (hobbies.isNotEmpty) '平时的生活里，$hobbies是家人熟悉的爱好。',
+          if (food.isNotEmpty) '餐桌上，$food是很容易被想起的味道。',
+          if (personality.isNotEmpty) '家人记得$elderName的性格，常常会想到$personality。',
+          if (dialect.isNotEmpty) '$elderName说话时带着$dialect，听起来很亲切。',
+          if (care.isNotEmpty) '日常照看里，家人也一直记着$care。',
         ].join(' '),
         relatedProfileFields: const [
           'career',
@@ -300,8 +349,8 @@ class MemoryAlbumComposer {
     return MemoryAlbumChapter(
       chapterId: 'profile',
       chapterTitle: '一个人的轮廓',
-      chapterSubtitle: '先记住那些最熟悉的小事',
-      chapterIntro: '姓名、籍贯、爱好和习惯，放在一起，就是家人眼里熟悉的样子。',
+      chapterSubtitle: '家人记得的来处和日子',
+      chapterIntro: '$elderName的故事，藏在家人记得的一件件小事里。',
       chapterType: 'profile',
       items: items,
     );
@@ -309,6 +358,7 @@ class MemoryAlbumComposer {
 
   static MemoryAlbumChapter _buildFamilyChapter(
     List<Map<String, dynamic>> familyMembers,
+    String elderName,
   ) {
     final items = <MemoryAlbumItem>[];
     for (final row in familyMembers.take(12)) {
@@ -318,17 +368,17 @@ class MemoryAlbumComposer {
       final location = _text(row['location']);
       final contact = _text(row['contact_freq']);
       final notes = _text(row['notes']);
-      final active = _bool01(row['is_active'], defaultValue: true);
       items.add(MemoryAlbumItem(
         itemId: 'family_${row['id'] ?? name}',
         itemType: 'profile_card',
         title: relation.isEmpty ? name : '$relation · $name',
         content: [
-          relation.isEmpty ? '$name是家里记下的重要亲友。' : '$name是$relation。',
-          if (location.isNotEmpty) '现在常在$location。',
-          if (contact.isNotEmpty) '联系频率写着：$contact。',
+          relation.isEmpty
+              ? '$name在家人的记忆里有自己的位置。'
+              : '$name是$elderName的$relation。',
+          if (location.isNotEmpty) '$name如今常在$location。',
+          if (contact.isNotEmpty) '家里和$name保持着$contact的联系。',
           if (notes.isNotEmpty) notes,
-          if (!active) '说到这段关系时，可以把语气放得更轻一些。',
         ].join(' '),
         relatedProfileFields: const ['family_members'],
         familyQuestions: [
@@ -341,8 +391,8 @@ class MemoryAlbumComposer {
     return MemoryAlbumChapter(
       chapterId: 'family',
       chapterTitle: '家里人和牵挂',
-      chapterSubtitle: '把称呼、地点和相处提醒放在一起',
-      chapterIntro: '亲属信息不是名单，而是老人每天可能想起的人。',
+      chapterSubtitle: '名字背后都是牵挂',
+      chapterIntro: '$elderName的日子里，家人的名字总是和牵挂连在一起。',
       chapterType: 'family',
       items: items,
     );
@@ -351,6 +401,7 @@ class MemoryAlbumComposer {
   static MemoryAlbumChapter _buildLifeChapter(
     List<Map<String, dynamic>> memoryEvents,
     List<ProfilePhotoModel> photos,
+    String elderName,
   ) {
     final items = <MemoryAlbumItem>[];
     for (final row in memoryEvents.take(12)) {
@@ -366,11 +417,13 @@ class MemoryAlbumComposer {
         itemType: 'timeline_card',
         title: title.isEmpty ? '一段往事' : title,
         content: [
-          if (time.isNotEmpty) '$time，',
-          if (location.isNotEmpty) '地点在$location。',
+          if (time.isNotEmpty && title.isNotEmpty) '$time，$title。',
+          if (time.isNotEmpty && title.isEmpty) '$time，家里记下了这一段往事。',
+          if (time.isEmpty && title.isNotEmpty) '$title，是家里记下的一段往事。',
+          if (location.isNotEmpty) '那段日子发生在$location。',
           if (desc.isNotEmpty) desc,
-          if (people.isNotEmpty) '这段经历里提到的人有：$people。',
-          if (emotion.isNotEmpty) '当时留下的感受是“$emotion”。',
+          if (people.isNotEmpty) '$people也在这段记忆里。',
+          if (emotion.isNotEmpty) '那时留下的感受是$emotion。',
         ].join(' '),
         photoId: _firstPhotoIdForEvent(row, photos),
         relatedProfileFields: const ['memory_events'],
@@ -383,8 +436,8 @@ class MemoryAlbumComposer {
     return MemoryAlbumChapter(
       chapterId: 'life_experience',
       chapterTitle: '走过的日子',
-      chapterSubtitle: '把那些重要时刻轻轻放好',
-      chapterIntro: '有些往事已经有了时间和地点，有些还只有一句话，都可以先留下。',
+      chapterSubtitle: '那些被家人记住的时刻',
+      chapterIntro: '$elderName走过的日子里，有些时刻一直被家人放在心上。',
       chapterType: 'life_experience',
       items: items,
     );
@@ -412,7 +465,7 @@ class MemoryAlbumComposer {
       familyQuestions.addAll(questions.map(
         (question) => FamilyQuestion(
           question: question,
-          reason: '多一点细节，翻到这张照片时就更容易想起当时。',
+          reason: '这些细节会让家人更容易想起当时。',
         ),
       ));
       items.add(MemoryAlbumItem(
@@ -431,11 +484,12 @@ class MemoryAlbumComposer {
       ));
     }
 
+    final elderName = _text(user?['name']);
     return MemoryAlbumChapter(
       chapterId: 'photo_memory',
       chapterTitle: '照片里的那一刻',
-      chapterSubtitle: '先看见画面，再想起人和事',
-      chapterIntro: '一张照片不用说得太满，先从画面里的人、地方和小物件慢慢讲。',
+      chapterSubtitle: '人、地方和那一天',
+      chapterIntro: '这些照片留下了${elderName.isEmpty ? '家人' : elderName}生命里的一个个片刻。',
       chapterType: 'photo_memory',
       items: items,
     );
@@ -444,29 +498,18 @@ class MemoryAlbumComposer {
   static MemoryAlbumChapter _buildDailyChapter(
     List<Map<String, dynamic>> dailyLifeRecords,
     Map<String, dynamic>? user,
+    String elderName,
   ) {
     final items = <MemoryAlbumItem>[];
     for (final row in dailyLifeRecords.take(8)) {
       final date = _text(row['date']);
-      final parts = <String>[];
-      void add(String label, String key) {
-        final value = _text(row[key]);
-        if (value.isNotEmpty) parts.add('$label$value');
-      }
-
-      add('早饭：', 'breakfast');
-      add('午饭：', 'lunch');
-      add('晚饭：', 'dinner');
-      add('活动：', 'activities');
-      add('见到的人：', 'people_met');
-      add('去过的地方：', 'places_went');
-      add('心情：', 'mood');
-      if (parts.isEmpty) continue;
+      final content = _dailyStory(row, date);
+      if (content.isEmpty) continue;
       items.add(MemoryAlbumItem(
         itemId: 'daily_${row['id'] ?? date}',
         itemType: 'text_card',
         title: date.isEmpty ? '一段日常' : date,
-        content: parts.join('；'),
+        content: content,
         relatedProfileFields: const ['daily_life_records'],
       ));
     }
@@ -479,7 +522,7 @@ class MemoryAlbumComposer {
           itemId: 'daily_food_preference',
           itemType: 'text_card',
           title: '熟悉的味道',
-          content: '饮食习惯里记着：$food。这样的小细节，常常最有家的味道。',
+          content: '家里人记得，$elderName喜欢$food。餐桌上的这个味道，是日子里很熟悉的一部分。',
           relatedProfileFields: const ['food_preference'],
         ),
       );
@@ -489,7 +532,7 @@ class MemoryAlbumComposer {
       chapterId: 'daily_life',
       chapterTitle: '日常里的安稳',
       chapterSubtitle: '饭菜、活动和心情也会留下痕迹',
-      chapterIntro: '这些日常记录适合慢慢补，不需要一次写完整。',
+      chapterIntro: '$elderName平常的日子，也有家人熟悉的安稳味道。',
       chapterType: 'daily_life',
       items: items,
     );
@@ -524,6 +567,45 @@ class MemoryAlbumComposer {
     return entries;
   }
 
+  static String _dailyStory(Map<String, dynamic> row, String date) {
+    final clauses = <String>[];
+    void add(String sentence) {
+      final text = _trimEndingPunctuation(sentence);
+      if (text.isNotEmpty) clauses.add(text);
+    }
+
+    final breakfast = _text(row['breakfast']);
+    final lunch = _text(row['lunch']);
+    final dinner = _text(row['dinner']);
+    final activities = _text(row['activities']);
+    final people = _text(row['people_met']);
+    final places = _text(row['places_went']);
+    final mood = _text(row['mood']);
+
+    if (breakfast.isNotEmpty) add('早饭吃的是$breakfast');
+    if (lunch.isNotEmpty) add('午饭有$lunch');
+    if (dinner.isNotEmpty) add('晚饭有$dinner');
+    if (activities.isNotEmpty) add('那天做了$activities');
+    if (people.isNotEmpty) add('见到了$people');
+    if (places.isNotEmpty) add('去过$places');
+    if (mood.isNotEmpty) add('心情是$mood');
+    if (clauses.isEmpty) return '';
+
+    final prefix = date.isEmpty ? '这一天' : date;
+    return '$prefix，${clauses.join('，')}。';
+  }
+
+  static String _ensureSentence(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return '';
+    if (RegExp(r'[。！？!?；;]$').hasMatch(trimmed)) return trimmed;
+    return '$trimmed。';
+  }
+
+  static String _trimEndingPunctuation(String text) {
+    return text.trim().replaceAll(RegExp(r'[。！？!?；;，,]+$'), '');
+  }
+
   static List<ProfileItem> _profileItems(Map<String, dynamic>? user) {
     final items = <ProfileItem>[];
     void add(String label, String key) {
@@ -548,12 +630,14 @@ class MemoryAlbumComposer {
 
   static ProfilePhotoModel? _pickCoverPhoto(List<ProfilePhotoModel> photos) {
     if (photos.isEmpty) return null;
+    final images = photos.where((photo) => !photo.isVideo).toList();
+    if (images.isEmpty) return photos.first;
     final avatar =
-        photos.where((photo) => photo.category == ProfilePhotoCategory.avatar);
+        images.where((photo) => photo.category == ProfilePhotoCategory.avatar);
     if (avatar.isNotEmpty) return avatar.first;
-    final favorite = photos.where((photo) => photo.isFavorite);
+    final favorite = images.where((photo) => photo.isFavorite);
     if (favorite.isNotEmpty) return favorite.first;
-    return photos.first;
+    return images.first;
   }
 
   static String _albumSubtitle(
@@ -588,13 +672,23 @@ class MemoryAlbumComposer {
     List<ProfilePhotoModel> photos,
   ) {
     if (coverPhoto == null) {
-      return '先留一个安静的封面。等以后放上一张熟悉的照片，再从那一天慢慢讲起。';
+      return '$elderName的故事，藏在家人记得的一件件小事里。';
     }
     final caption = _text(coverPhoto.caption);
     if (caption.isNotEmpty) {
-      return caption;
+      return _ensureSentence(caption);
     }
-    return '先从这张照片开始。画面不用说得太满，家里人看见了，自然会想起那一天。';
+    final time = _text(coverPhoto.photoTime);
+    final location = _text(coverPhoto.location);
+    final people = _text(coverPhoto.peopleInvolved);
+    final parts = <String>[
+      if (time.isNotEmpty && location.isNotEmpty)
+        '$time，$elderName在$location留下了这一刻。',
+      if (time.isNotEmpty && location.isEmpty) '$time，$elderName留下了这一刻。',
+      if (time.isEmpty && location.isNotEmpty) '$elderName在$location留下了这一刻。',
+      if (people.isNotEmpty) '$people也在这个片刻里。',
+    ];
+    return parts.isEmpty ? '$elderName的故事，在家人的记忆里慢慢展开。' : parts.join('');
   }
 
   static String _openingText(
@@ -604,11 +698,10 @@ class MemoryAlbumComposer {
     List<ProfilePhotoModel> photos,
   ) {
     final bits = <String>[
-      '我们先从这些照片和家里记下的小事说起。',
-      if (photos.isNotEmpty) '看到一张照片，就慢慢想起当时的地方、身边的人，还有那天的心情。',
-      if (familyMembers.isNotEmpty) '家里人的名字也在这里，像平时聊天时那样轻轻提起。',
-      if (memoryEvents.isNotEmpty) '那些重要的日子，我们一段一段慢慢翻。',
-      '说不准的地方就先放着，等哪天想起来，再补上一句也好。',
+      '这是$elderName的回忆，也是家人一起记住的日子。',
+      if (familyMembers.isNotEmpty) '那些熟悉的名字，陪在$elderName的故事里。',
+      if (memoryEvents.isNotEmpty) '那些被记下的时刻，一件件连成$elderName走过的路。',
+      if (photos.isNotEmpty) '照片里的片刻，也留住了当时的人和地方。',
     ];
     return bits.join('');
   }
@@ -620,19 +713,21 @@ class MemoryAlbumComposer {
     final hometown = _text(user?['hometown']);
     final personality = _text(user?['personality']);
     final hobbies = _text(user?['hobbies']);
-    final parts = <String>['先记下这些熟悉的小信息。'];
-    if (hometown.isNotEmpty) parts.add('籍贯写着$hometown。');
-    if (personality.isNotEmpty) parts.add('性格特点可以记作“$personality”。');
-    if (hobbies.isNotEmpty) parts.add('平时喜欢的事有：$hobbies。');
-    parts.add('往后翻照片、讲故事时，这些小事会慢慢用得上。');
+    final career = _text(user?['career']);
+    final parts = <String>[
+      if (hometown.isNotEmpty) '$elderName和$hometown有着熟悉的来处。',
+      if (career.isNotEmpty) '$career的经历，也留在$elderName走过的岁月里。',
+      if (personality.isNotEmpty) '家人眼里的$elderName，带着$personality的性格。',
+      if (hobbies.isNotEmpty) '$hobbies是$elderName日子里常有的喜欢。',
+    ];
+    if (parts.isEmpty) {
+      parts.add('$elderName的日子里，有许多家人熟悉的细节。');
+    }
     return parts.join('');
   }
 
   static String _endingText(String elderName, List<String> missing) {
-    if (missing.isEmpty) {
-      return '今天先翻到这里。以后有新照片、新故事，再慢慢放进来。';
-    }
-    return '今天先翻到这里。还有一些地方可以慢慢想：${missing.join('、')}。不着急，想起一点，就添上一点。';
+    return '$elderName的日子还在继续，家人的记挂也还在继续。';
   }
 
   static String _photoTitle(ProfilePhotoModel photo) {
@@ -659,39 +754,43 @@ class MemoryAlbumComposer {
     final time = _text(photo.photoTime);
     final location = _text(photo.location);
     final people = _text(photo.peopleInvolved);
-    final name = _text(user?['name']);
-    final hometown = _text(user?['hometown']);
+    final elderName = _text(user?['name']);
     final parts = <String>[];
 
     if (caption.isNotEmpty) {
-      parts.add(caption);
-    } else {
-      parts.add('这张照片还可以再多说几句。先看看画面里的人、地点，还有当时的心情。');
+      parts.add(_ensureSentence(caption));
     }
     if (time.isNotEmpty || location.isNotEmpty) {
-      parts.add([
-        if (time.isNotEmpty) time,
-        if (location.isNotEmpty) location,
-      ].join('，'));
+      if (time.isNotEmpty && location.isNotEmpty) {
+        parts.add('$time，$location留下了这一刻。');
+      } else if (time.isNotEmpty) {
+        parts.add('$time，这一刻被家人留了下来。');
+      } else {
+        parts.add('$location留下了这一刻。');
+      }
     }
     if (people.isNotEmpty) {
-      parts.add('照片里标注的人物是：$people。');
-    } else {
-      parts.add('人物身份还没有完全确认时，先称作照片里的人，会更稳妥。');
+      parts.add('$people也在这一刻里。');
     }
     if (familyMember != null) {
       final rel = _text(familyMember['relation']);
       final familyName = _text(familyMember['name']);
       if (familyName.isNotEmpty) {
-        parts.add(rel.isEmpty ? '它和$familyName有关。' : '它和$rel$familyName有关。');
+        if (rel.isNotEmpty && elderName.isNotEmpty) {
+          parts.add('$familyName是$elderName的$rel，这份牵挂也留在这里。');
+        } else {
+          parts.add('$familyName也和这一刻连在一起。');
+        }
       }
     }
     if (memoryEvent != null) {
       final title = _text(memoryEvent['title']);
-      if (title.isNotEmpty) parts.add('它也被关联到“$title”这段经历。');
-    }
-    if (name.isNotEmpty && hometown.isNotEmpty) {
-      parts.add('$name来自$hometown，讲到这张照片时，可以把这份熟悉也轻轻带上。');
+      final desc = _text(memoryEvent['description']);
+      if (desc.isNotEmpty && !parts.contains(desc)) {
+        parts.add(_ensureSentence(desc));
+      } else if (title.isNotEmpty) {
+        parts.add('“$title”那段日子，也留在这里。');
+      }
     }
     return parts.join(' ');
   }
@@ -793,19 +892,31 @@ class MemoryAlbumComposer {
   static Map<String, dynamic> _photoInputRow(ProfilePhotoModel photo) => {
         'photo_id': photo.id,
         'category': _photoCategoryLabel(photo.category),
-        'visible_content': _text(photo.caption).isEmpty
-            ? '一张${_photoCategoryLabel(photo.category)}，画面细节还可以继续补充。'
-            : _text(photo.caption),
+        'media_type': photo.isVideo ? 'video' : 'image',
+        'visible_content': _photoVisibleContent(photo),
         'people': _text(photo.peopleInvolved),
         'scene': _text(photo.location),
         'emotion': '',
         'objects': <String>[],
         'uncertain_points': [
-          if (_text(photo.peopleInvolved).isEmpty) '人物身份未确认',
-          if (_text(photo.caption).isEmpty) '照片内容说明不足',
+          if (_text(photo.peopleInvolved).isEmpty) '缺少人物信息',
+          if (_text(photo.caption).isEmpty) '缺少照片说明',
         ],
         'photo_time': _text(photo.photoTime),
       };
+
+  static String _photoVisibleContent(ProfilePhotoModel photo) {
+    final caption = _text(photo.caption);
+    if (caption.isNotEmpty) {
+      return photo.isVideo ? '视频：$caption' : caption;
+    }
+    if (photo.isVideo) return '一段家庭视频';
+    return [
+      _text(photo.photoTime),
+      _text(photo.location),
+      _text(photo.peopleInvolved),
+    ].where((text) => text.isNotEmpty).join('，');
+  }
 
   static List<String> _importantLabels(Map<String, dynamic>? user) {
     return [
@@ -882,10 +993,7 @@ class MemoryAlbumComposer {
     try {
       final decoded = jsonDecode(raw);
       if (decoded is List) {
-        return decoded
-            .map((item) => item.toString().trim())
-            .where((item) => item.isNotEmpty)
-            .toList();
+        return decoded.map(_text).where((item) => item.isNotEmpty).toList();
       }
     } catch (_) {}
     return raw
@@ -917,6 +1025,76 @@ class MemoryAlbumComposer {
 
   static String _text(Object? value) {
     final text = value?.toString().trim();
-    return text ?? '';
+    if (text == null || text.isEmpty) return '';
+    return _isNoInformationText(text) ? '' : text;
+  }
+
+  static bool _isNoInformationText(String text) {
+    final normalized = text
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[\s　。.!！?？,，;；:：、~～_—\-]+'), '');
+    if (normalized.isEmpty) return true;
+
+    const exactNoInfo = <String>{
+      '无',
+      '暂无',
+      '没有',
+      '没',
+      '否',
+      '不',
+      '不用',
+      '无需',
+      '无事',
+      '没事',
+      '不详',
+      '未知',
+      '不知道',
+      '不清楚',
+      '未填写',
+      '未填',
+      '未确认',
+      '待确认',
+      '未说明',
+      '未提供',
+      '空',
+      'null',
+      'none',
+      'nil',
+      'na',
+      'n/a',
+      'no',
+      'nothing',
+    };
+    if (exactNoInfo.contains(normalized)) return true;
+
+    const noInfoPhrases = <String>[
+      '无特殊',
+      '无特别',
+      '没有特殊',
+      '没有特别',
+      '暂无特殊',
+      '暂无特别',
+      '无需特殊',
+      '不需要特殊',
+      '不用特殊',
+      '无注意',
+      '无注意事项',
+      '没有注意事项',
+      '暂无注意事项',
+      '无照看',
+      '无照护',
+      '无护理',
+      '无要求',
+      '没有要求',
+      '暂无要求',
+      '无备注',
+      '没有备注',
+      '暂无备注',
+      '无补充',
+      '没有补充',
+      '暂无补充',
+    ];
+    return noInfoPhrases.any(normalized.startsWith);
   }
 }

@@ -11,16 +11,19 @@ import '../../core/services/profile_photo_storage.dart';
 import '../../data/local_db/local_database.dart';
 import '../../data/models/nearby_person.dart';
 import '../../data/models/profile_photo.dart';
+import '../../data/models/profile_video.dart';
 
 class DataPreentryScreen extends StatefulWidget {
   const DataPreentryScreen({
     super.key,
     required this.ownerUserId,
     required this.onBack,
+    this.onDataChanged,
   });
 
   final String ownerUserId;
   final VoidCallback onBack;
+  final VoidCallback? onDataChanged;
 
   @override
   State<DataPreentryScreen> createState() => _DataPreentryScreenState();
@@ -78,6 +81,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
   List<Map<String, dynamic>> _familyMembers = [];
   List<Map<String, dynamic>> _memoryEvents = [];
   List<ProfilePhotoModel> _photos = [];
+  List<ProfileVideoModel> _videos = [];
 
   @override
   void initState() {
@@ -133,6 +137,11 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
     super.dispose();
   }
 
+  Future<void> _afterDataChanged() async {
+    await _loadAll();
+    widget.onDataChanged?.call();
+  }
+
   Future<void> _loadAll() async {
     setState(() => _loading = true);
     await LocalDatabase.ensureUserExists(widget.ownerUserId,
@@ -144,8 +153,13 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
         await LocalDatabase.listFamilyMembersForUser(widget.ownerUserId);
     final events =
         await LocalDatabase.listMemoryEventsForUser(widget.ownerUserId);
-    final photos =
-        await LocalDatabase.listProfilePhotosForUser(widget.ownerUserId);
+    final photos = (await LocalDatabase.listProfilePhotosForUser(
+      widget.ownerUserId,
+    ))
+        .where((p) => !p.isVideo)
+        .toList();
+    final videos =
+        await LocalDatabase.listProfileVideosForUser(widget.ownerUserId);
 
     if (user != null) {
       _name.text = _string(user['name']);
@@ -170,6 +184,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
       _familyMembers = families;
       _memoryEvents = events;
       _photos = photos;
+      _videos = videos;
       _loading = false;
     });
   }
@@ -193,6 +208,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
       'medical_notes': _text(_medicalNotes),
     });
     _toast('老人信息已保存');
+    await _afterDataChanged();
   }
 
   Future<void> _saveNearbyPerson() async {
@@ -215,13 +231,13 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
       'is_active': _personActive ? 1 : 0,
     });
     _clearPersonForm();
-    await _loadAll();
+    await _afterDataChanged();
     _toast('亲属候选已保存');
   }
 
   Future<void> _confirmNearby(String id) async {
     final familyId = await LocalDatabase.confirmNearbyPersonAsFamilyMember(id);
-    await _loadAll();
+    await _afterDataChanged();
     _toast(familyId == null ? '未找到候选记录' : '已确认入亲属表');
   }
 
@@ -245,7 +261,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
       'verified': 1,
     });
     _clearEventForm();
-    await _loadAll();
+    await _afterDataChanged();
     _toast('重要经历已保存');
   }
 
@@ -295,7 +311,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
     await LocalDatabase.insertProfilePhoto(photo);
     await _syncPhotoToExistingTables(photo);
     _clearPhotoForm();
-    await _loadAll();
+    await _afterDataChanged();
     _toast('照片已保存');
   }
 
@@ -698,6 +714,18 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
           const SizedBox(height: 8),
           _Subhead(label: '照片库'),
           ..._photos.take(8).map(_photoTile),
+          const SizedBox(height: 16),
+          const _Subhead(label: '视频库'),
+          if (_videos.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                '暂无视频。可在陪伴页用「+」上传。',
+                style: TextStyle(color: AppTheme.textSoft, fontSize: 18),
+              ),
+            )
+          else
+            ..._videos.take(8).map(_videoTile),
         ],
       ),
     );
@@ -731,7 +759,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
             tooltip: '删除',
             onPressed: () async {
               await LocalDatabase.removeNearbyPerson(person.id);
-              await _loadAll();
+              await _afterDataChanged();
             },
             icon: const Icon(Icons.delete_outline_rounded),
           ),
@@ -751,7 +779,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
         tooltip: '删除',
         onPressed: () async {
           await LocalDatabase.deleteMemoryEvent((row['id'] as num).toInt());
-          await _loadAll();
+          await _afterDataChanged();
         },
         icon: const Icon(Icons.delete_outline_rounded),
       ),
@@ -781,7 +809,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
                 photo.id,
                 !photo.isFavorite,
               );
-              await _loadAll();
+              await _afterDataChanged();
             },
             icon: Icon(
               photo.isFavorite ? Icons.star_rounded : Icons.star_outline_rounded,
@@ -792,11 +820,36 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
             tooltip: '删除',
             onPressed: () async {
               await LocalDatabase.deleteProfilePhoto(photo.id);
-              await _loadAll();
+              await _afterDataChanged();
+              _toast('照片已删除');
             },
             icon: const Icon(Icons.delete_outline_rounded),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _videoTile(ProfileVideoModel video) {
+    final title = video.caption?.trim().isNotEmpty == true
+        ? video.caption!
+        : '家庭视频';
+    return _ListTileShell(
+      leading: const Icon(Icons.videocam_rounded, color: AppTheme.primaryDeep),
+      title: title,
+      subtitle: [
+        video.videoTime,
+        video.location,
+        video.peopleInvolved,
+      ].where((e) => e != null && e.trim().isNotEmpty).join('；'),
+      trailing: IconButton(
+        tooltip: '删除',
+        onPressed: () async {
+          await LocalDatabase.deleteProfileVideo(video.id);
+          await _afterDataChanged();
+          _toast('视频已删除');
+        },
+        icon: const Icon(Icons.delete_outline_rounded),
       ),
     );
   }

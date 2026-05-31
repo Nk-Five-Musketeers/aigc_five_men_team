@@ -8,7 +8,9 @@ import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/profile_photo.dart';
+import '../models/profile_video.dart';
 import '../repositories/pre_entry_mapper.dart';
+import '../../core/services/local_media_storage.dart';
 
 /// 某用户在本地库中已持久化的业务表快照（含预录入与对话抽取结果），重启后可读。
 class StoredUserDataBundle {
@@ -19,6 +21,7 @@ class StoredUserDataBundle {
     this.dailyLifeRecords = const [],
     this.nearbyPeople = const [],
     this.profilePhotoRows = const [],
+    this.profileVideoRows = const [],
     this.pendingRelationConflicts = const [],
     this.cognitiveTests = const [],
   });
@@ -29,6 +32,7 @@ class StoredUserDataBundle {
   final List<Map<String, dynamic>> dailyLifeRecords;
   final List<Map<String, dynamic>> nearbyPeople;
   final List<Map<String, dynamic>> profilePhotoRows;
+  final List<Map<String, dynamic>> profileVideoRows;
   final List<Map<String, dynamic>> pendingRelationConflicts;
   final List<Map<String, dynamic>> cognitiveTests;
 
@@ -48,7 +52,7 @@ class LocalDatabase {
   static bool _dbFactoryReady = false;
 
   static const _dbName = 'bluecare.db';
-  static const _dbVersion = 6;
+  static const _dbVersion = 7;
 
   static const legacyDefaultUserId = 'local_user_default';
   static const legacyDefaultConversationId = 'local_conversation_home';
@@ -94,6 +98,7 @@ class LocalDatabase {
     'nearby_people',
     'relation_conflicts',
     'profile_photos',
+    'profile_videos',
     'cognitive_tests',
   ];
 
@@ -256,6 +261,7 @@ class LocalDatabase {
         'CREATE INDEX IF NOT EXISTS idx_nearby_people_owner ON nearby_people(owner_user_id)');
 
     await _createProfilePhotoTables(db);
+    await _createProfileVideoTables(db);
     await _createCognitiveTestTables(db);
 
     await db.execute('''
@@ -370,6 +376,79 @@ class LocalDatabase {
     await _tryAddColumn(
         db, 'ALTER TABLE nearby_people ADD COLUMN family_member_id INTEGER');
     await _createProfilePhotoTables(db);
+    await _createProfileVideoTables(db);
+  }
+
+  static Future<void> _createProfileVideoTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS profile_videos(
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        category TEXT,
+        caption TEXT,
+        video_time TEXT,
+        location TEXT,
+        people_involved TEXT,
+        family_member_id INTEGER,
+        memory_event_id INTEGER,
+        is_favorite INTEGER NOT NULL DEFAULT 0,
+        message_id TEXT,
+        mime TEXT,
+        metadata TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(family_member_id) REFERENCES family_members(id) ON DELETE SET NULL,
+        FOREIGN KEY(memory_event_id) REFERENCES memory_events(id) ON DELETE SET NULL
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_profile_videos_owner ON profile_videos(owner_user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_profile_videos_message ON profile_videos(message_id)');
+  }
+
+  static Future<void> _migrateAttachmentVideosToProfileVideos(Database db) async {
+    final rows = await db.rawQuery('''
+      SELECT
+        a.id AS attachment_id,
+        a.file_path,
+        a.mime,
+        a.metadata,
+        a.message_id,
+        m.content,
+        m.timestamp,
+        c.owner_user_id
+      FROM attachments a
+      INNER JOIN messages m ON m.id = a.message_id
+      INNER JOIN conversations c ON c.id = m.conversation_id
+      WHERE a.type = 'video'
+    ''');
+    final now = DateTime.now().toIso8601String();
+    for (final row in rows) {
+      final id = row['attachment_id'] as String?;
+      if (id == null || id.isEmpty) continue;
+      final existing = await db.query(
+        'profile_videos',
+        where: 'id = ?',
+        whereArgs: [id],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) continue;
+      await db.insert('profile_videos', {
+        'id': id,
+        'owner_user_id': row['owner_user_id'],
+        'file_path': row['file_path'],
+        'category': 'memory',
+        'caption': row['content'],
+        'message_id': row['message_id'],
+        'mime': row['mime'],
+        'metadata': row['metadata'],
+        'created_at': row['timestamp'] ?? now,
+        'updated_at': now,
+      });
+    }
   }
 
   static Future<void> _createProfilePhotoTables(Database db) async {
@@ -524,6 +603,10 @@ class LocalDatabase {
       await _createFamilyMemoryDailyTables(db);
       await _createProfilePhotoTables(db);
       await _createCognitiveTestTables(db);
+    }
+    if (oldVersion < 7) {
+      await _createProfileVideoTables(db);
+      await _migrateAttachmentVideosToProfileVideos(db);
     }
     if (newVersion > _dbVersion) {
       return;
@@ -823,6 +906,30 @@ class LocalDatabase {
     final db = await instance();
     return await db
         .query('attachments', where: 'message_id = ?', whereArgs: [messageId]);
+  }
+
+  /// 某用户对话中上传的视频附件（不含图片）。
+  static Future<List<Map<String, dynamic>>> listVideoAttachmentsForUser(
+    String ownerUserId,
+  ) async {
+    final db = await instance();
+    return db.rawQuery('''
+      SELECT
+        a.id AS attachment_id,
+        a.file_path,
+        a.mime,
+        a.size,
+        a.metadata,
+        m.id AS message_id,
+        m.content,
+        m.timestamp
+      FROM attachments a
+      INNER JOIN messages m ON m.id = a.message_id
+      INNER JOIN conversations c ON c.id = m.conversation_id
+      WHERE c.owner_user_id = ?
+        AND a.type = ?
+      ORDER BY m.timestamp DESC
+    ''', [ownerUserId, 'video']);
   }
 
   static Future<void> upsertNearbyPerson(
@@ -1338,8 +1445,98 @@ class LocalDatabase {
   }
 
   static Future<int> deleteProfilePhoto(String id) async {
+    return deleteProfilePhotoWithMedia(id);
+  }
+
+  /// 删除照片档案并移除磁盘文件。
+  static Future<int> deleteProfilePhotoWithMedia(String id) async {
+    final photo = await getProfilePhotoById(id);
+    if (photo == null) return 0;
+
+    await LocalMediaStorage.deleteFileIfExists(photo.filePath);
+
+    if (photo.category == ProfilePhotoCategory.avatar) {
+      final user = await getUserById(photo.ownerUserId);
+      if (user?['avatar_path'] == photo.filePath) {
+        await updateUser(photo.ownerUserId, {'avatar_path': ''});
+      }
+    }
+    if (photo.familyMemberId != null) {
+      final member = await getFamilyMemberById(photo.familyMemberId!);
+      if (member?['photo_path'] == photo.filePath) {
+        await updateFamilyMember(photo.familyMemberId!, {'photo_path': ''});
+      }
+    }
+    if (photo.memoryEventId != null) {
+      await _removePathFromMemoryEventPhotos(
+        photo.memoryEventId!,
+        photo.filePath,
+      );
+    }
+
     final db = await instance();
     return db.delete('profile_photos', where: 'id = ?', whereArgs: [id]);
+  }
+
+  static Future<void> _removePathFromMemoryEventPhotos(
+    int eventId,
+    String filePath,
+  ) async {
+    final row = await getMemoryEventById(eventId);
+    final raw = row?['photo_paths'] as String?;
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final paths = List<String>.from(json.decode(raw));
+      if (!paths.remove(filePath)) return;
+      await updateMemoryEvent(eventId, {
+        'photo_paths': json.encode(paths),
+      });
+    } catch (_) {}
+  }
+
+  // --- 表5：视频档案 profile_videos ---
+
+  static Future<void> insertProfileVideo(ProfileVideoModel video) async {
+    final db = await instance();
+    await ensureUserExists(video.ownerUserId);
+    await db.insert(
+      'profile_videos',
+      video.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  static Future<ProfileVideoModel?> getProfileVideoById(String id) async {
+    final db = await instance();
+    final rows =
+        await db.query('profile_videos', where: 'id = ?', whereArgs: [id]);
+    if (rows.isEmpty) return null;
+    return ProfileVideoModel.fromMap(rows.first);
+  }
+
+  static Future<List<ProfileVideoModel>> listProfileVideosForUser(
+    String ownerUserId,
+  ) async {
+    final db = await instance();
+    final rows = await db.query(
+      'profile_videos',
+      where: 'owner_user_id = ?',
+      whereArgs: [ownerUserId],
+      orderBy: 'is_favorite DESC, updated_at DESC',
+    );
+    return rows.map(ProfileVideoModel.fromMap).toList();
+  }
+
+  static Future<int> deleteProfileVideo(String id) async {
+    return deleteProfileVideoWithMedia(id);
+  }
+
+  static Future<int> deleteProfileVideoWithMedia(String id) async {
+    final video = await getProfileVideoById(id);
+    if (video == null) return 0;
+    await LocalMediaStorage.deleteFileIfExists(video.filePath);
+    final db = await instance();
+    return db.delete('profile_videos', where: 'id = ?', whereArgs: [id]);
   }
 
   static Future<ProfilePhotoModel?> getProfilePhotoById(String id) async {
@@ -1798,9 +1995,38 @@ class LocalDatabase {
     );
   }
 
-  /// 删除单条消息（attachments 表通过外键级联删除）。
+  /// 删除单条消息，并清理关联附件文件与档案。
   static Future<void> deleteMessageById(String messageId) async {
     final db = await instance();
+    final attachments = await getAttachmentsForMessage(messageId);
+    for (final att in attachments) {
+      final path = att['file_path'] as String?;
+      await LocalMediaStorage.deleteFileIfExists(path);
+      final type = att['type'] as String? ?? '';
+      final attId = att['id'] as String?;
+      if (type == 'video' && attId != null) {
+        await db.delete('profile_videos', where: 'id = ?', whereArgs: [attId]);
+      }
+      final metaRaw = att['metadata'] as String?;
+      if (metaRaw != null && metaRaw.isNotEmpty) {
+        try {
+          final meta = Map<String, dynamic>.from(json.decode(metaRaw));
+          final photoId = meta['profile_photo_id'] as String?;
+          if (photoId != null) {
+            await deleteProfilePhotoWithMedia(photoId);
+          }
+        } catch (_) {}
+      }
+    }
+    final videoRows = await db.query(
+      'profile_videos',
+      where: 'message_id = ?',
+      whereArgs: [messageId],
+    );
+    for (final row in videoRows) {
+      await deleteProfileVideoWithMedia(row['id'] as String);
+    }
+
     final rows = await db.query(
       'messages',
       columns: ['conversation_id'],
@@ -1892,6 +2118,10 @@ class LocalDatabase {
       ownerUserId,
       limit: photoLimit,
     );
+    final videos = (await listProfileVideosForUser(ownerUserId))
+        .take(photoLimit)
+        .map((v) => v.toMap())
+        .toList();
     final conflicts = await getPendingRelationConflicts(ownerUserId);
     final cognitive = await listCognitiveTestsForUser(
       ownerUserId,
@@ -1909,6 +2139,7 @@ class LocalDatabase {
           ? nearby
           : nearby.take(nearbyLimit).toList(),
       profilePhotoRows: photos,
+      profileVideoRows: videos,
       pendingRelationConflicts: conflicts,
       cognitiveTests: cognitive,
     );

@@ -2,8 +2,9 @@ import 'package:flutter/foundation.dart';
 
 import '../data/local_db/local_database.dart';
 import '../data/models/profile_photo.dart';
+import '../data/models/profile_video.dart';
 
-/// 首次对话前从本地库预读的档案快照（文字 + 照片索引），避免每次发消息重复查库。
+/// 首次对话前从本地库预读的档案快照（文字 + 照片 + 视频索引）。
 class UserArchiveCache {
   UserArchiveCache({
     required this.ownerUserId,
@@ -11,6 +12,7 @@ class UserArchiveCache {
     required this.memoryContextLines,
     required this.elderProfileBrief,
     required this.photos,
+    required this.videos,
     required this.familyMembers,
     required this.nearbyPeople,
     required this.familyNamesById,
@@ -20,7 +22,9 @@ class UserArchiveCache {
   final Map<String, dynamic>? user;
   final List<String> memoryContextLines;
   final String elderProfileBrief;
+  /// 仅图片（不含视频）。
   final List<ProfilePhotoModel> photos;
+  final List<ProfileVideoModel> videos;
   final List<Map<String, dynamic>> familyMembers;
   final List<Map<String, dynamic>> nearbyPeople;
   final Map<int, String> familyNamesById;
@@ -39,18 +43,24 @@ class UserArchiveCache {
         familyNames[id] = name;
       }
     }
+    final photos = bundle.profilePhotoRows
+        .map(ProfilePhotoModel.fromMap)
+        .where((p) => !p.isVideo)
+        .toList(growable: false);
+    final videos = bundle.profileVideoRows
+        .map(ProfileVideoModel.fromMap)
+        .toList(growable: false);
     debugPrint(
-      '[UserArchiveCache] 完成：照片 ${bundle.profilePhotoRows.length} 张，'
-      '档案行 ${lines.length}，家人 ${bundle.familyMembers.length}',
+      '[UserArchiveCache] 完成：照片 ${photos.length} 张，'
+      '视频 ${videos.length} 段，档案行 ${lines.length}，家人 ${bundle.familyMembers.length}',
     );
     return UserArchiveCache(
       ownerUserId: ownerUserId,
       user: bundle.user,
       memoryContextLines: lines,
       elderProfileBrief: brief,
-      photos: bundle.profilePhotoRows
-          .map(ProfilePhotoModel.fromMap)
-          .toList(growable: false),
+      photos: photos,
+      videos: videos,
       familyMembers: bundle.familyMembers,
       nearbyPeople: bundle.nearbyPeople,
       familyNamesById: familyNames,
@@ -86,14 +96,14 @@ class UserArchiveCache {
     return '$brief\n$storedBody';
   }
 
-  /// 供大模型选图的照片目录（id + 分类 + 标签字段，不含二进制）。
   String buildPhotoCatalogForLlm() {
     if (photos.isEmpty) return '（照片库为空）';
     final buf = StringBuffer();
     for (final p in photos) {
       final fav = p.isFavorite ? '是' : '否';
       buf.writeln(
-        'id=${p.id} | 分类=${ProfilePhotoCategoryLabels.label(p.category)}'
+        'id=${p.id} | 类型=图片'
+        ' | 分类=${ProfilePhotoCategoryLabels.label(p.category)}'
         '(${p.category.value}) | 说明=${p.caption ?? ''}'
         ' | 人物=${p.peopleInvolved ?? ''}'
         ' | 地点=${p.location ?? ''}'
@@ -104,7 +114,24 @@ class UserArchiveCache {
     return buf.toString().trim();
   }
 
-  /// 供语音润色的人名提示。
+  String buildVideoCatalogForLlm() {
+    if (videos.isEmpty) return '（视频库为空）';
+    final buf = StringBuffer();
+    for (final v in videos) {
+      final fav = v.isFavorite ? '是' : '否';
+      buf.writeln(
+        'id=${v.id} | 类型=视频'
+        ' | 分类=${v.category.value}'
+        ' | 说明=${v.caption ?? ''}'
+        ' | 人物=${v.peopleInvolved ?? ''}'
+        ' | 地点=${v.location ?? ''}'
+        ' | 时间=${v.videoTime ?? ''}'
+        ' | 重点=$fav',
+      );
+    }
+    return buf.toString().trim();
+  }
+
   String buildKnownNamesHint() {
     final lines = <String>[];
     for (final r in familyMembers.take(12)) {

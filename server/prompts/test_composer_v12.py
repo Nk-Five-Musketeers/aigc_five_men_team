@@ -26,7 +26,10 @@ def _load(filename: str) -> Any:
     path = _DIR / filename
     if not path.is_file():
         raise FileNotFoundError(path)
-    mod_name = "_test_" + filename.replace(".py", "").replace(".", "_")
+    mod_name = (
+        "_test_"
+        + filename.replace(".py", "").replace(".", "_").replace("/", "_").replace("\\", "_")
+    )
     spec = importlib.util.spec_from_file_location(mod_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load {path}")
@@ -36,11 +39,11 @@ def _load(filename: str) -> Any:
 
 
 # 按需加载各 v1.2 模块
-_gp12 = _load("global_prompt_v1.2.py")
-_dg12 = _load("daily_greeting_v1.2.py")
-_mc12 = _load("memory_chat_v1.2.py")
-_ct12 = _load("cognitive_test_v1.2.py")
-_es12 = _load("emotion_support_v1.2.py")
+_gp12 = _load("v1.2/global_prompt.py")
+_dg12 = _load("v1.2/daily_greeting.py")
+_mc12 = _load("v1.2/memory_chat.py")
+_ct12 = _load("v1.2/cognitive_test.py")
+_es12 = _load("v1.2/emotion_support.py")
 
 
 class TestV12Modules(unittest.TestCase):

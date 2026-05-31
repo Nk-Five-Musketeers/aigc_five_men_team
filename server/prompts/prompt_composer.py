@@ -48,25 +48,25 @@ CONFIG: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 _VERSION_LOADERS: Dict[str, Dict[str, Tuple[str, str]]] = {
     "v1.0": {
-        "global": ("global_prompt_v1.0.py", "get_prompt"),
-        "daily_greeting": ("daily_greeting_v1.0.py", "get_prompt"),
-        "memory_chat": ("memory_chat_v1.0.py", "get_prompt"),
-        "cognitive_test": ("cognitive_test_v1.0.py", "get_prompt"),
-        "emotion_support": ("emotion_support_v1.0.py", "get_prompt"),
+        "global": ("v1.0/global_prompt.py", "get_prompt"),
+        "daily_greeting": ("v1.0/daily_greeting.py", "get_prompt"),
+        "memory_chat": ("v1.0/memory_chat.py", "get_prompt"),
+        "cognitive_test": ("v1.0/cognitive_test.py", "get_prompt"),
+        "emotion_support": ("v1.0/emotion_support.py", "get_prompt"),
     },
     "v1.1": {
-        "global": ("global_prompt_v1.1.py", "get_prompt"),
-        "daily_greeting": ("daily_greeting_v1.1.py", "get_prompt"),
-        "memory_chat": ("memory_chat_v1.1.py", "get_prompt"),
-        "cognitive_test": ("cognitive_test_v1.1.py", "get_prompt"),
-        "emotion_support": ("emotion_support_v1.1.py", "get_prompt"),
+        "global": ("v1.1/global_prompt.py", "get_prompt"),
+        "daily_greeting": ("v1.1/daily_greeting.py", "get_prompt"),
+        "memory_chat": ("v1.1/memory_chat.py", "get_prompt"),
+        "cognitive_test": ("v1.1/cognitive_test.py", "get_prompt"),
+        "emotion_support": ("v1.1/emotion_support.py", "get_prompt"),
     },
     "v1.2": {
-        "global": ("global_prompt_v1.2.py", "get_prompt"),
-        "daily_greeting": ("daily_greeting_v1.2.py", "get_prompt"),
-        "memory_chat": ("memory_chat_v1.2.py", "get_prompt"),
-        "cognitive_test": ("cognitive_test_v1.2.py", "get_prompt"),
-        "emotion_support": ("emotion_support_v1.2.py", "get_prompt"),
+        "global": ("v1.2/global_prompt.py", "get_prompt"),
+        "daily_greeting": ("v1.2/daily_greeting.py", "get_prompt"),
+        "memory_chat": ("v1.2/memory_chat.py", "get_prompt"),
+        "cognitive_test": ("v1.2/cognitive_test.py", "get_prompt"),
+        "emotion_support": ("v1.2/emotion_support.py", "get_prompt"),
     },
 }
 
@@ -75,7 +75,10 @@ _MODULE_CACHE: Dict[Tuple[str, str], Callable[..., Dict[str, Any]]] = {}
 
 def _load_module(filename: str) -> Any:
     path = _DIR / filename
-    mod_name = "_promptmod_" + filename.replace(".py", "").replace(".", "_")
+    mod_name = (
+        "_promptmod_"
+        + filename.replace(".py", "").replace(".", "_").replace("/", "_").replace("\\", "_")
+    )
     spec = importlib.util.spec_from_file_location(mod_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(path)

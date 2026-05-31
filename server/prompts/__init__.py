@@ -20,7 +20,10 @@ def _load(filename: str) -> Any:
     path = _DIR / filename
     if not path.is_file():
         raise FileNotFoundError(path)
-    mod_name = "prompts_" + filename.replace(".py", "").replace(".", "_")
+    mod_name = (
+        "prompts_"
+        + filename.replace(".py", "").replace(".", "_").replace("/", "_").replace("\\", "_")
+    )
     spec = importlib.util.spec_from_file_location(mod_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load {path}")
@@ -30,18 +33,18 @@ def _load(filename: str) -> Any:
 
 
 # v1.1 (默认)
-_gp11 = _load("global_prompt_v1.1.py")
-_dg11 = _load("daily_greeting_v1.1.py")
-_mc11 = _load("memory_chat_v1.1.py")
-_ct11 = _load("cognitive_test_v1.1.py")
-_es11 = _load("emotion_support_v1.1.py")
+_gp11 = _load("v1.1/global_prompt.py")
+_dg11 = _load("v1.1/daily_greeting.py")
+_mc11 = _load("v1.1/memory_chat.py")
+_ct11 = _load("v1.1/cognitive_test.py")
+_es11 = _load("v1.1/emotion_support.py")
 
 # v1.0 (保留, 供回退)
-_gp10 = _load("global_prompt_v1.0.py")
-_dg10 = _load("daily_greeting_v1.0.py")
-_mc10 = _load("memory_chat_v1.0.py")
-_ct10 = _load("cognitive_test_v1.0.py")
-_es10 = _load("emotion_support_v1.0.py")
+_gp10 = _load("v1.0/global_prompt.py")
+_dg10 = _load("v1.0/daily_greeting.py")
+_mc10 = _load("v1.0/memory_chat.py")
+_ct10 = _load("v1.0/cognitive_test.py")
+_es10 = _load("v1.0/emotion_support.py")
 
 # 默认入口 → v1.1
 get_global_prompt: Callable[..., Dict[str, Any]] = _gp11.get_prompt

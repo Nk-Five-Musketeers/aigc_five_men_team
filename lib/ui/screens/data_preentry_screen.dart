@@ -142,6 +142,102 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
     widget.onDataChanged?.call();
   }
 
+  Future<bool> _confirmDelete({
+    required String title,
+    required String message,
+  }) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
+  Future<void> _deleteNearbyPerson(NearbyPersonModel person) async {
+    final name = person.name?.trim().isNotEmpty == true
+        ? person.name!.trim()
+        : '该亲属候选';
+    final ok = await _confirmDelete(
+      title: '删除亲属候选',
+      message: '确定删除「$name」吗？若已确认入亲属表，对应家庭成员记录也会一并删除。',
+    );
+    if (!ok) return;
+    await LocalDatabase.removeNearbyPerson(person.id);
+    await _afterDataChanged();
+    _toast('已删除');
+  }
+
+  Future<void> _deleteFamilyMember(Map<String, dynamic> row) async {
+    final relation = _string(row['relation']);
+    final name = _string(row['name']);
+    final label = relation.isEmpty && name.isEmpty
+        ? '该家庭成员'
+        : '${relation.isEmpty ? '亲属' : relation} · ${name.isEmpty ? '未命名' : name}';
+    final ok = await _confirmDelete(
+      title: '删除家庭成员',
+      message: '确定删除「$label」吗？删除后无法恢复。',
+    );
+    if (!ok) return;
+    await LocalDatabase.deleteFamilyMember((row['id'] as num).toInt());
+    await _afterDataChanged();
+    _toast('家庭成员已删除');
+  }
+
+  Future<void> _deleteMemoryEvent(Map<String, dynamic> row) async {
+    final title = _string(row['title']).isEmpty
+        ? '未命名经历'
+        : _string(row['title']);
+    final ok = await _confirmDelete(
+      title: '删除重要经历',
+      message: '确定删除「$title」吗？删除后无法恢复。',
+    );
+    if (!ok) return;
+    await LocalDatabase.deleteMemoryEvent((row['id'] as num).toInt());
+    await _afterDataChanged();
+    _toast('重要经历已删除');
+  }
+
+  Future<void> _deletePhoto(ProfilePhotoModel photo) async {
+    final title = photo.caption?.trim().isNotEmpty == true
+        ? photo.caption!.trim()
+        : _photoCategoryLabel(photo.category);
+    final ok = await _confirmDelete(
+      title: '删除照片',
+      message: '确定删除「$title」吗？数据库记录和本地文件都会删除。',
+    );
+    if (!ok) return;
+    await LocalDatabase.deleteProfilePhoto(photo.id);
+    await _afterDataChanged();
+    _toast('照片已删除');
+  }
+
+  Future<void> _deleteVideo(ProfileVideoModel video) async {
+    final title = video.caption?.trim().isNotEmpty == true
+        ? video.caption!.trim()
+        : '家庭视频';
+    final ok = await _confirmDelete(
+      title: '删除视频',
+      message: '确定删除「$title」吗？数据库记录和本地文件都会删除。',
+    );
+    if (!ok) return;
+    await LocalDatabase.deleteProfileVideo(video.id);
+    await _afterDataChanged();
+    _toast('视频已删除');
+  }
+
   Future<void> _loadAll() async {
     setState(() => _loading = true);
     await LocalDatabase.ensureUserExists(widget.ownerUserId,
@@ -568,8 +664,29 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
             onChanged: (value) => setState(() => _personActive = value),
           ),
           const SizedBox(height: 8),
+          _Subhead(label: '已确认亲属'),
+          if (_familyMembers.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                '暂无已确认亲属。保存候选后点「确认入亲属表」。',
+                style: TextStyle(color: AppTheme.textSoft, fontSize: 18),
+              ),
+            )
+          else
+            ..._familyMembers.map(_familyTile),
+          const SizedBox(height: 8),
           _Subhead(label: '候选列表'),
-          ..._nearbyPeople.map(_nearbyTile),
+          if (_nearbyPeople.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                '暂无候选记录。',
+                style: TextStyle(color: AppTheme.textSoft, fontSize: 18),
+              ),
+            )
+          else
+            ..._nearbyPeople.map(_nearbyTile),
         ],
       ),
     );
@@ -612,7 +729,16 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
           ),
           const SizedBox(height: 8),
           _Subhead(label: '已保存经历'),
-          ..._memoryEvents.take(6).map(_memoryTile),
+          if (_memoryEvents.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                '暂无已保存经历。',
+                style: TextStyle(color: AppTheme.textSoft, fontSize: 18),
+              ),
+            )
+          else
+            ..._memoryEvents.map(_memoryTile),
         ],
       ),
     );
@@ -713,7 +839,16 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
           ),
           const SizedBox(height: 8),
           _Subhead(label: '照片库'),
-          ..._photos.take(8).map(_photoTile),
+          if (_photos.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                '暂无照片。',
+                style: TextStyle(color: AppTheme.textSoft, fontSize: 18),
+              ),
+            )
+          else
+            ..._photos.map(_photoTile),
           const SizedBox(height: 16),
           const _Subhead(label: '视频库'),
           if (_videos.isEmpty)
@@ -725,8 +860,32 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
               ),
             )
           else
-            ..._videos.take(8).map(_videoTile),
+            ..._videos.map(_videoTile),
         ],
+      ),
+    );
+  }
+
+  Widget _familyTile(Map<String, dynamic> row) {
+    final relation = _string(row['relation']);
+    final name = _string(row['name']);
+    final title = relation.isEmpty && name.isEmpty
+        ? '未命名亲属'
+        : '${relation.isEmpty ? '亲属' : relation} · ${name.isEmpty ? '未命名' : name}';
+    final isActive = (row['is_active'] as int?) != 0;
+    return _ListTileShell(
+      title: title,
+      subtitle: [
+        _string(row['birthday']),
+        _string(row['location']),
+        _string(row['contact_freq']),
+        _string(row['notes']),
+        if (!isActive) '已标记为不再联系',
+      ].where((e) => e.trim().isNotEmpty).join('；'),
+      trailing: IconButton(
+        tooltip: '删除',
+        onPressed: () => _deleteFamilyMember(row),
+        icon: const Icon(Icons.delete_outline_rounded),
       ),
     );
   }
@@ -757,10 +916,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
           ),
           IconButton(
             tooltip: '删除',
-            onPressed: () async {
-              await LocalDatabase.removeNearbyPerson(person.id);
-              await _afterDataChanged();
-            },
+            onPressed: () => _deleteNearbyPerson(person),
             icon: const Icon(Icons.delete_outline_rounded),
           ),
         ],
@@ -777,10 +933,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
       subtitle: _string(row['description']),
       trailing: IconButton(
         tooltip: '删除',
-        onPressed: () async {
-          await LocalDatabase.deleteMemoryEvent((row['id'] as num).toInt());
-          await _afterDataChanged();
-        },
+        onPressed: () => _deleteMemoryEvent(row),
         icon: const Icon(Icons.delete_outline_rounded),
       ),
     );
@@ -818,11 +971,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
           ),
           IconButton(
             tooltip: '删除',
-            onPressed: () async {
-              await LocalDatabase.deleteProfilePhoto(photo.id);
-              await _afterDataChanged();
-              _toast('照片已删除');
-            },
+            onPressed: () => _deletePhoto(photo),
             icon: const Icon(Icons.delete_outline_rounded),
           ),
         ],
@@ -844,11 +993,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
       ].where((e) => e != null && e.trim().isNotEmpty).join('；'),
       trailing: IconButton(
         tooltip: '删除',
-        onPressed: () async {
-          await LocalDatabase.deleteProfileVideo(video.id);
-          await _afterDataChanged();
-          _toast('视频已删除');
-        },
+        onPressed: () => _deleteVideo(video),
         icon: const Icon(Icons.delete_outline_rounded),
       ),
     );

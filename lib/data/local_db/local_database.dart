@@ -981,8 +981,31 @@ class LocalDatabase {
   }
 
   static Future<int> removeNearbyPerson(String id) async {
+    return removeNearbyPersonWithCleanup(id);
+  }
+
+  /// 删除周围人候选；若已确认入亲属表，同步删除对应家庭成员记录。
+  static Future<int> removeNearbyPersonWithCleanup(String id) async {
     final db = await instance();
-    return await db.delete('nearby_people', where: 'id = ?', whereArgs: [id]);
+    final rows = await db.query(
+      'nearby_people',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return 0;
+
+    final nearby = rows.first;
+    final familyMemberId = nearby['family_member_id'];
+
+    final deleted =
+        await db.delete('nearby_people', where: 'id = ?', whereArgs: [id]);
+
+    if (familyMemberId is num) {
+      await deleteFamilyMemberWithCleanup(familyMemberId.toInt());
+    }
+
+    return deleted;
   }
 
   static Future<int?> confirmNearbyPersonAsFamilyMember(String nearbyId) async {
@@ -1220,7 +1243,42 @@ class LocalDatabase {
   }
 
   static Future<int> deleteFamilyMember(int id) async {
+    return deleteFamilyMemberWithCleanup(id);
+  }
+
+  /// 删除家庭成员并清理关联照片、周围人确认状态。
+  static Future<int> deleteFamilyMemberWithCleanup(int id) async {
+    final member = await getFamilyMemberById(id);
+    if (member == null) return 0;
+
+    final photoPath = (member['photo_path'] as String?)?.trim();
+    if (photoPath != null && photoPath.isNotEmpty) {
+      await LocalMediaStorage.deleteFileIfExists(photoPath);
+    }
+
     final db = await instance();
+    final nearbyRows = await db.query(
+      'nearby_people',
+      where: 'family_member_id = ?',
+      whereArgs: [id],
+    );
+    for (final row in nearbyRows) {
+      final metadata = _mergeMetadata(row['metadata'] as String?, {});
+      metadata.remove('confirmed_as_family_member');
+      metadata.remove('family_member_id');
+      metadata.remove('confirmed_at');
+      await db.update(
+        'nearby_people',
+        {
+          'family_member_id': null,
+          'metadata': json.encode(metadata),
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [row['id']],
+      );
+    }
+
     return db.delete('family_members', where: 'id = ?', whereArgs: [id]);
   }
 
@@ -1336,6 +1394,34 @@ class LocalDatabase {
   }
 
   static Future<int> deleteMemoryEvent(int id) async {
+    return deleteMemoryEventWithCleanup(id);
+  }
+
+  /// 删除重要经历并清理关联媒体文件（photo_paths / video_path）。
+  static Future<int> deleteMemoryEventWithCleanup(int id) async {
+    final event = await getMemoryEventById(id);
+    if (event == null) return 0;
+
+    final rawPaths = event['photo_paths'] as String?;
+    if (rawPaths != null && rawPaths.isNotEmpty) {
+      try {
+        final decoded = json.decode(rawPaths);
+        if (decoded is List) {
+          for (final item in decoded) {
+            final path = item?.toString().trim() ?? '';
+            if (path.isNotEmpty) {
+              await LocalMediaStorage.deleteFileIfExists(path);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    final videoPath = (event['video_path'] as String?)?.trim();
+    if (videoPath != null && videoPath.isNotEmpty) {
+      await LocalMediaStorage.deleteFileIfExists(videoPath);
+    }
+
     final db = await instance();
     return db.delete('memory_events', where: 'id = ?', whereArgs: [id]);
   }

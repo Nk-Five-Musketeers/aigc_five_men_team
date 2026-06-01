@@ -1,4 +1,4 @@
-﻿import 'dart:convert';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -961,8 +961,8 @@ class LocalDatabase {
   /// 按主键读取单条周围人档案。
   static Future<Map<String, dynamic>?> getNearbyPersonById(String id) async {
     final db = await instance();
-    final rows =
-        await db.query('nearby_people', where: 'id = ?', whereArgs: [id], limit: 1);
+    final rows = await db.query('nearby_people',
+        where: 'id = ?', whereArgs: [id], limit: 1);
     if (rows.isEmpty) return null;
     return rows.first;
   }
@@ -1513,7 +1513,8 @@ class LocalDatabase {
   }
 
   /// 切换照片是否收藏（重点照片）。
-  static Future<void> setProfilePhotoFavorite(String id, bool isFavorite) async {
+  static Future<void> setProfilePhotoFavorite(
+      String id, bool isFavorite) async {
     await updateProfilePhoto(id, {'is_favorite': isFavorite ? 1 : 0});
   }
 
@@ -1656,8 +1657,7 @@ class LocalDatabase {
       where: category == null
           ? 'owner_user_id = ?'
           : 'owner_user_id = ? AND category = ?',
-      whereArgs:
-          category == null ? [ownerUserId] : [ownerUserId, category],
+      whereArgs: category == null ? [ownerUserId] : [ownerUserId, category],
       orderBy: 'is_favorite DESC, updated_at DESC',
       limit: limit,
     );
@@ -1687,7 +1687,8 @@ class LocalDatabase {
       }
     }
 
-    final matchedCategories = ProfilePhotoCategoryLabels.categoriesMatchingKeyword(k);
+    final matchedCategories =
+        ProfilePhotoCategoryLabels.categoriesMatchingKeyword(k);
     if (matchedCategories.isNotEmpty) {
       final db = await instance();
       final placeholders =
@@ -1695,8 +1696,7 @@ class LocalDatabase {
       final catValues = matchedCategories.map((c) => c.value).toList();
       final rows = await db.query(
         'profile_photos',
-        where:
-            'owner_user_id = ? AND category IN ($placeholders)',
+        where: 'owner_user_id = ? AND category IN ($placeholders)',
         whereArgs: [ownerUserId, ...catValues],
         orderBy: 'is_favorite DESC, updated_at DESC',
         limit: limit,
@@ -1829,7 +1829,8 @@ class LocalDatabase {
     if (oid != null) {
       await ensureUserExists(oid);
     }
-    payload['created_at'] = payload['created_at'] ?? DateTime.now().toIso8601String();
+    payload['created_at'] =
+        payload['created_at'] ?? DateTime.now().toIso8601String();
     payload['is_valid'] = (payload['is_valid'] as int?) ?? 0;
     return db.insert('cognitive_tests', payload);
   }
@@ -1864,7 +1865,8 @@ class LocalDatabase {
   }
 
   /// 从最近一条往回数连续无效作答的条数（用于频控：连续 2 次无效当天停）。
-  static Future<int> getRecentInvalidStreak(String ownerUserId, {int limit = 2}) async {
+  static Future<int> getRecentInvalidStreak(String ownerUserId,
+      {int limit = 2}) async {
     final db = await instance();
     final rows = await db.query(
       'cognitive_tests',
@@ -2147,7 +2149,8 @@ class LocalDatabase {
   }
 
   /// 统计当日某用户在 messages 表中的发言条数（用于判断"今日首次发言"）。
-  static Future<int> countMessagesTodayByUser(String userId, String todayDate) async {
+  static Future<int> countMessagesTodayByUser(
+      String userId, String todayDate) async {
     final db = await instance();
     final rows = await db.rawQuery(
       "SELECT COUNT(*) AS cnt FROM messages WHERE user_id = ? AND timestamp >= ?",
@@ -2310,8 +2313,7 @@ class LocalDatabase {
         }
       }
 
-      final familyRows =
-          await listFamilyMembersForUser(ownerUserId);
+      final familyRows = await listFamilyMembersForUser(ownerUserId);
       if (familyRows.isEmpty) {
         lines.add('- 家庭成员表：暂无结构化记录。');
       } else {

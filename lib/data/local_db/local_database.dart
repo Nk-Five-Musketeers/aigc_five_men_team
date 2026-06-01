@@ -8,11 +8,42 @@ import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/profile_photo.dart';
+import '../models/profile_video.dart';
 import '../repositories/pre_entry_mapper.dart';
+import '../../core/services/local_media_storage.dart';
 
 /// 某用户在本地库中已持久化的业务表快照（含预录入与对话抽取结果），重启后可读。
-part 'stored_user_data_bundle.dart';
-part 'local_database_schema.dart';
+class StoredUserDataBundle {
+  const StoredUserDataBundle({
+    this.user,
+    this.familyMembers = const [],
+    this.memoryEvents = const [],
+    this.dailyLifeRecords = const [],
+    this.nearbyPeople = const [],
+    this.profilePhotoRows = const [],
+    this.profileVideoRows = const [],
+    this.pendingRelationConflicts = const [],
+    this.cognitiveTests = const [],
+  });
+
+  final Map<String, dynamic>? user;
+  final List<Map<String, dynamic>> familyMembers;
+  final List<Map<String, dynamic>> memoryEvents;
+  final List<Map<String, dynamic>> dailyLifeRecords;
+  final List<Map<String, dynamic>> nearbyPeople;
+  final List<Map<String, dynamic>> profilePhotoRows;
+  final List<Map<String, dynamic>> profileVideoRows;
+  final List<Map<String, dynamic>> pendingRelationConflicts;
+  final List<Map<String, dynamic>> cognitiveTests;
+
+  bool get hasAnyData =>
+      user != null ||
+      familyMembers.isNotEmpty ||
+      memoryEvents.isNotEmpty ||
+      dailyLifeRecords.isNotEmpty ||
+      nearbyPeople.isNotEmpty ||
+      profilePhotoRows.isNotEmpty;
+}
 
 class LocalDatabase {
   LocalDatabase._();
@@ -21,7 +52,7 @@ class LocalDatabase {
   static bool _dbFactoryReady = false;
 
   static const _dbName = 'bluecare.db';
-  static const _dbVersion = 6;
+  static const _dbVersion = 7;
 
   static const legacyDefaultUserId = 'local_user_default';
   static const legacyDefaultConversationId = 'local_conversation_home';
@@ -55,6 +86,35 @@ class LocalDatabase {
   }
 
   /// 业务所需全部表名；用于检测「仅有 bluecare.db 文件且 user_version 已对齐，但从未执行过建表」的损坏状态。
+  static const List<String> _requiredApplicationTables = <String>[
+    'users',
+    'family_members',
+    'memory_events',
+    'daily_life_records',
+    'conversations',
+    'conversation_members',
+    'messages',
+    'attachments',
+    'nearby_people',
+    'relation_conflicts',
+    'profile_photos',
+    'profile_videos',
+    'cognitive_tests',
+  ];
+
+  /// 在每次打开库后执行：若任一张核心表缺失，则补跑幂等 DDL（不依赖 onCreate/onUpgrade 是否被触发）。
+  static Future<void> _repairSchemaIfIncomplete(Database db) async {
+    for (final name in _requiredApplicationTables) {
+      if (!await _tableExists(db, name)) {
+        debugPrint(
+          'LocalDatabase: 表 "$name" 缺失，将补全完整结构（常见于空库文件已带版本号等情况）。',
+        );
+        await _createSchema(db);
+        return;
+      }
+    }
+  }
+
   static Future<String> getDatabasePathForDebug() async {
     _initDatabaseFactoryForCurrentPlatform();
     final dbPath = await getDatabasesPath();
@@ -69,6 +129,634 @@ class LocalDatabase {
       return '当前为桌面端：会生成本地 SQLite 文件 bluecare.db。';
     }
     return '当前为移动端：会生成应用沙盒内的 SQLite 文件 bluecare.db。';
+  }
+
+  static void _initDatabaseFactoryForCurrentPlatform() {
+    if (_dbFactoryReady) return;
+    if (kIsWeb) {
+      databaseFactory = databaseFactoryFfiWeb;
+      _dbFactoryReady = true;
+      return;
+    }
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      sqfliteFfiInit();
+      databaseFactory = databaseFactoryFfi;
+    }
+    _dbFactoryReady = true;
+  }
+
+  // Helper utilities: use async methods only (no blocking IO)
+
+  /// 完整业务 DDL；全部使用 `IF NOT EXISTS`，供 [onCreate]、[onOpen] 修复路径与安全复用。
+  static Future<void> _createSchema(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS users(
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        avatar_path TEXT,
+        metadata TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        birth_year TEXT,
+        hometown TEXT,
+        career TEXT,
+        hobbies TEXT,
+        food_preference TEXT,
+        personality TEXT,
+        taboo TEXT,
+        dialect TEXT,
+        gender TEXT,
+        current_address TEXT,
+        care_notes TEXT,
+        medical_notes TEXT
+      )
+    ''');
+
+    await _createFamilyMemoryDailyTables(db);
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS conversations(
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        created_at TEXT,
+        last_message_id TEXT,
+        owner_user_id TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE SET NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS conversation_members(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        role TEXT,
+        UNIQUE(conversation_id, user_id),
+        FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS messages(
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        user_id TEXT,
+        content TEXT,
+        type TEXT,
+        timestamp TEXT,
+        extra TEXT,
+        FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS attachments(
+        id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL,
+        type TEXT,
+        file_path TEXT,
+        mime TEXT,
+        size INTEGER,
+        metadata TEXT,
+        FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS nearby_people(
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        name TEXT,
+        relation TEXT,
+        photo_path TEXT,
+        phone TEXT,
+        birthday TEXT,
+        location TEXT,
+        address TEXT,
+        contact_freq TEXT,
+        note TEXT,
+        is_emergency_contact INTEGER DEFAULT 0,
+        distance_meters REAL,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        family_member_id INTEGER,
+        metadata TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(family_member_id) REFERENCES family_members(id) ON DELETE SET NULL
+      )
+    ''');
+
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_messages_conversation_timestamp ON messages(conversation_id, timestamp DESC)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_nearby_people_owner ON nearby_people(owner_user_id)');
+
+    await _createProfilePhotoTables(db);
+    await _createProfileVideoTables(db);
+    await _createCognitiveTestTables(db);
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS relation_conflicts(
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        nearby_person_id TEXT,
+        person_name TEXT NOT NULL,
+        field_name TEXT NOT NULL,
+        old_value TEXT,
+        new_value TEXT,
+        source_message_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT,
+        resolved_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(nearby_person_id) REFERENCES nearby_people(id) ON DELETE SET NULL
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_relation_conflicts_owner ON relation_conflicts(owner_user_id, status)');
+  }
+
+  /// 表2 家庭成员、表3 记忆事件、表5 每日生活记录（均归属 users.id）。
+  /// 使用 `IF NOT EXISTS`，便于 [onCreate] 与升级路径安全复用，并补全「只建了其中一张表」的中间状态。
+  static Future<void> _createFamilyMemoryDailyTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS family_members(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_user_id TEXT NOT NULL,
+        name TEXT,
+        relation TEXT,
+        photo_path TEXT,
+        birthday TEXT,
+        location TEXT,
+        contact_freq TEXT,
+        notes TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_family_members_owner ON family_members(owner_user_id)');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS memory_events(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_user_id TEXT NOT NULL,
+        event_time TEXT,
+        title TEXT,
+        description TEXT,
+        location TEXT,
+        people_involved TEXT,
+        emotion TEXT,
+        photo_paths TEXT,
+        video_path TEXT,
+        importance INTEGER NOT NULL DEFAULT 3,
+        source TEXT,
+        verified INTEGER NOT NULL DEFAULT 0,
+        used_count INTEGER NOT NULL DEFAULT 0,
+        last_used TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_memory_events_owner ON memory_events(owner_user_id)');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS daily_life_records(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_user_id TEXT NOT NULL,
+        date TEXT NOT NULL,
+        breakfast TEXT,
+        lunch TEXT,
+        dinner TEXT,
+        activities TEXT,
+        people_met TEXT,
+        places_went TEXT,
+        mood TEXT,
+        raw_extract TEXT,
+        source_dialog TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE(owner_user_id, date)
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_daily_life_owner_date ON daily_life_records(owner_user_id, date DESC)');
+  }
+
+  static Future<void> _ensurePreEntrySchema(Database db) async {
+    await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN gender TEXT');
+    await _tryAddColumn(
+        db, 'ALTER TABLE users ADD COLUMN current_address TEXT');
+    await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN care_notes TEXT');
+    await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN medical_notes TEXT');
+    await _tryAddColumn(
+        db, 'ALTER TABLE nearby_people ADD COLUMN photo_path TEXT');
+    await _tryAddColumn(
+        db, 'ALTER TABLE nearby_people ADD COLUMN birthday TEXT');
+    await _tryAddColumn(
+        db, 'ALTER TABLE nearby_people ADD COLUMN location TEXT');
+    await _tryAddColumn(
+        db, 'ALTER TABLE nearby_people ADD COLUMN contact_freq TEXT');
+    await _tryAddColumn(db,
+        'ALTER TABLE nearby_people ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1');
+    await _tryAddColumn(
+        db, 'ALTER TABLE nearby_people ADD COLUMN family_member_id INTEGER');
+    await _createProfilePhotoTables(db);
+    await _createProfileVideoTables(db);
+  }
+
+  static Future<void> _createProfileVideoTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS profile_videos(
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        category TEXT,
+        caption TEXT,
+        video_time TEXT,
+        location TEXT,
+        people_involved TEXT,
+        family_member_id INTEGER,
+        memory_event_id INTEGER,
+        is_favorite INTEGER NOT NULL DEFAULT 0,
+        message_id TEXT,
+        mime TEXT,
+        metadata TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(family_member_id) REFERENCES family_members(id) ON DELETE SET NULL,
+        FOREIGN KEY(memory_event_id) REFERENCES memory_events(id) ON DELETE SET NULL
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_profile_videos_owner ON profile_videos(owner_user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_profile_videos_message ON profile_videos(message_id)');
+  }
+
+  static Future<void> _migrateAttachmentVideosToProfileVideos(Database db) async {
+    final rows = await db.rawQuery('''
+      SELECT
+        a.id AS attachment_id,
+        a.file_path,
+        a.mime,
+        a.metadata,
+        a.message_id,
+        m.content,
+        m.timestamp,
+        c.owner_user_id
+      FROM attachments a
+      INNER JOIN messages m ON m.id = a.message_id
+      INNER JOIN conversations c ON c.id = m.conversation_id
+      WHERE a.type = 'video'
+    ''');
+    final now = DateTime.now().toIso8601String();
+    for (final row in rows) {
+      final id = row['attachment_id'] as String?;
+      if (id == null || id.isEmpty) continue;
+      final existing = await db.query(
+        'profile_videos',
+        where: 'id = ?',
+        whereArgs: [id],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) continue;
+      await db.insert('profile_videos', {
+        'id': id,
+        'owner_user_id': row['owner_user_id'],
+        'file_path': row['file_path'],
+        'category': 'memory',
+        'caption': row['content'],
+        'message_id': row['message_id'],
+        'mime': row['mime'],
+        'metadata': row['metadata'],
+        'created_at': row['timestamp'] ?? now,
+        'updated_at': now,
+      });
+    }
+  }
+
+  static Future<void> _createProfilePhotoTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS profile_photos(
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        storage_type TEXT NOT NULL DEFAULT 'file_path',
+        category TEXT,
+        caption TEXT,
+        photo_time TEXT,
+        location TEXT,
+        people_involved TEXT,
+        family_member_id INTEGER,
+        memory_event_id INTEGER,
+        is_favorite INTEGER NOT NULL DEFAULT 0,
+        metadata TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(family_member_id) REFERENCES family_members(id) ON DELETE SET NULL,
+        FOREIGN KEY(memory_event_id) REFERENCES memory_events(id) ON DELETE SET NULL
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_profile_photos_owner ON profile_photos(owner_user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_profile_photos_category ON profile_photos(owner_user_id, category)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_profile_photos_family_member ON profile_photos(family_member_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_profile_photos_memory_event ON profile_photos(memory_event_id)');
+  }
+
+  static Future<void> _createCognitiveTestTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS cognitive_tests(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_user_id TEXT NOT NULL,
+        test_type TEXT NOT NULL,
+        image_path TEXT,
+        prompt_text TEXT,
+        user_answer TEXT,
+        is_valid INTEGER NOT NULL DEFAULT 0,
+        score_note TEXT,
+        created_at TEXT,
+        FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_cognitive_tests_owner_time ON cognitive_tests(owner_user_id, created_at DESC)');
+  }
+
+  static Future<void> _upgradeSchema(
+      Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await _ensureCoreTables(db);
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS nearby_people(
+          id TEXT PRIMARY KEY,
+          owner_user_id TEXT NOT NULL,
+          name TEXT,
+          relation TEXT,
+          phone TEXT,
+          address TEXT,
+          note TEXT,
+          is_emergency_contact INTEGER DEFAULT 0,
+          distance_meters REAL,
+          metadata TEXT,
+          created_at TEXT,
+          updated_at TEXT,
+          FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+      ''');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_nearby_people_owner ON nearby_people(owner_user_id)');
+      await _migrateLegacyChatMessages(db);
+    }
+    if (oldVersion < 3) {
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_messages_conversation_timestamp ON messages(conversation_id, timestamp DESC)');
+    }
+    if (oldVersion < 4) {
+      try {
+        await db
+            .execute('ALTER TABLE conversations ADD COLUMN owner_user_id TEXT');
+      } catch (_) {
+        // Column may already exist on partial installs.
+      }
+      await db.rawUpdate(
+        'UPDATE conversations SET owner_user_id = ? WHERE id = ? AND (owner_user_id IS NULL OR owner_user_id = \'\')',
+        [legacyDefaultUserId, legacyDefaultConversationId],
+      );
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS relation_conflicts(
+          id TEXT PRIMARY KEY,
+          owner_user_id TEXT NOT NULL,
+          nearby_person_id TEXT,
+          person_name TEXT NOT NULL,
+          field_name TEXT NOT NULL,
+          old_value TEXT,
+          new_value TEXT,
+          source_message_id TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at TEXT,
+          resolved_at TEXT,
+          FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY(nearby_person_id) REFERENCES nearby_people(id) ON DELETE SET NULL
+        )
+      ''');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_relation_conflicts_owner ON relation_conflicts(owner_user_id, status)');
+    }
+    if (oldVersion < 5) {
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN updated_at TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN birth_year TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN hometown TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN career TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN hobbies TEXT');
+      await _tryAddColumn(
+          db, 'ALTER TABLE users ADD COLUMN food_preference TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN personality TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN taboo TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN dialect TEXT');
+
+      await _createFamilyMemoryDailyTables(db);
+    }
+    if (oldVersion < 6) {
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN gender TEXT');
+      await _tryAddColumn(
+          db, 'ALTER TABLE users ADD COLUMN current_address TEXT');
+      await _tryAddColumn(db, 'ALTER TABLE users ADD COLUMN care_notes TEXT');
+      await _tryAddColumn(
+          db, 'ALTER TABLE users ADD COLUMN medical_notes TEXT');
+
+      await _tryAddColumn(
+          db, 'ALTER TABLE nearby_people ADD COLUMN photo_path TEXT');
+      await _tryAddColumn(
+          db, 'ALTER TABLE nearby_people ADD COLUMN birthday TEXT');
+      await _tryAddColumn(
+          db, 'ALTER TABLE nearby_people ADD COLUMN location TEXT');
+      await _tryAddColumn(
+          db, 'ALTER TABLE nearby_people ADD COLUMN contact_freq TEXT');
+      await _tryAddColumn(db,
+          'ALTER TABLE nearby_people ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1');
+      await _tryAddColumn(
+          db, 'ALTER TABLE nearby_people ADD COLUMN family_member_id INTEGER');
+
+      await _createFamilyMemoryDailyTables(db);
+      await _createProfilePhotoTables(db);
+      await _createCognitiveTestTables(db);
+    }
+    if (oldVersion < 7) {
+      await _createProfileVideoTables(db);
+      await _migrateAttachmentVideosToProfileVideos(db);
+    }
+    if (newVersion > _dbVersion) {
+      return;
+    }
+  }
+
+  static Future<void> _tryAddColumn(Database db, String sql) async {
+    try {
+      await db.execute(sql);
+    } catch (_) {
+      // Column may already exist on partial installs.
+    }
+  }
+
+  static Future<void> _ensureCoreTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS users(
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        avatar_path TEXT,
+        metadata TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        birth_year TEXT,
+        hometown TEXT,
+        career TEXT,
+        hobbies TEXT,
+        food_preference TEXT,
+        personality TEXT,
+        taboo TEXT,
+        dialect TEXT,
+        gender TEXT,
+        current_address TEXT,
+        care_notes TEXT,
+        medical_notes TEXT
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS conversations(
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        created_at TEXT,
+        last_message_id TEXT
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS conversation_members(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        role TEXT,
+        UNIQUE(conversation_id, user_id),
+        FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS messages(
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        user_id TEXT,
+        content TEXT,
+        type TEXT,
+        timestamp TEXT,
+        extra TEXT,
+        FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS attachments(
+        id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL,
+        type TEXT,
+        file_path TEXT,
+        mime TEXT,
+        size INTEGER,
+        metadata TEXT,
+        FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id)');
+  }
+
+  static Future<void> _migrateLegacyChatMessages(Database db) async {
+    final legacyExists = await _tableExists(db, 'chat_messages');
+    if (!legacyExists) return;
+
+    const legacyUserId = 'local_user_default';
+    const legacyConversationId = 'local_conversation_home';
+    final now = DateTime.now().toIso8601String();
+    await db.insert(
+        'users',
+        {
+          'id': legacyUserId,
+          'name': '王阿姨',
+          'created_at': now,
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore);
+    await db.insert(
+        'conversations',
+        {
+          'id': legacyConversationId,
+          'title': '默认陪伴会话',
+          'created_at': now,
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore);
+    await db.insert(
+        'conversation_members',
+        {
+          'conversation_id': legacyConversationId,
+          'user_id': legacyUserId,
+          'role': 'owner',
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore);
+
+    final oldRows = await db.query('chat_messages', orderBy: 'timestamp ASC');
+    for (final row in oldRows) {
+      await db.insert(
+          'messages',
+          {
+            'id':
+                (row['id'] ?? 'legacy_${DateTime.now().microsecondsSinceEpoch}')
+                    .toString(),
+            'conversation_id': legacyConversationId,
+            'user_id': (row['is_user'] as int? ?? 0) == 1 ? legacyUserId : null,
+            'content': row['content'] as String? ?? '',
+            'type': 'text',
+            'timestamp': row['timestamp'] as String? ?? now,
+            'extra': json.encode({
+              'is_user': (row['is_user'] as int? ?? 0) == 1,
+              'migrated_from': 'chat_messages',
+            }),
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+
+  static Future<bool> _tableExists(Database db, String tableName) async {
+    final result = await db.query(
+      'sqlite_master',
+      columns: ['name'],
+      where: 'type = ? AND name = ?',
+      whereArgs: ['table', tableName],
+      limit: 1,
+    );
+    return result.isNotEmpty;
   }
 
   static Future<void> insertUser(Map<String, dynamic> user) async {
@@ -220,6 +908,30 @@ class LocalDatabase {
         .query('attachments', where: 'message_id = ?', whereArgs: [messageId]);
   }
 
+  /// 某用户对话中上传的视频附件（不含图片）。
+  static Future<List<Map<String, dynamic>>> listVideoAttachmentsForUser(
+    String ownerUserId,
+  ) async {
+    final db = await instance();
+    return db.rawQuery('''
+      SELECT
+        a.id AS attachment_id,
+        a.file_path,
+        a.mime,
+        a.size,
+        a.metadata,
+        m.id AS message_id,
+        m.content,
+        m.timestamp
+      FROM attachments a
+      INNER JOIN messages m ON m.id = a.message_id
+      INNER JOIN conversations c ON c.id = m.conversation_id
+      WHERE c.owner_user_id = ?
+        AND a.type = ?
+      ORDER BY m.timestamp DESC
+    ''', [ownerUserId, 'video']);
+  }
+
   static Future<void> upsertNearbyPerson(
       Map<String, dynamic> nearbyPerson) async {
     final db = await instance();
@@ -269,8 +981,31 @@ class LocalDatabase {
   }
 
   static Future<int> removeNearbyPerson(String id) async {
+    return removeNearbyPersonWithCleanup(id);
+  }
+
+  /// 删除周围人候选；若已确认入亲属表，同步删除对应家庭成员记录。
+  static Future<int> removeNearbyPersonWithCleanup(String id) async {
     final db = await instance();
-    return await db.delete('nearby_people', where: 'id = ?', whereArgs: [id]);
+    final rows = await db.query(
+      'nearby_people',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return 0;
+
+    final nearby = rows.first;
+    final familyMemberId = nearby['family_member_id'];
+
+    final deleted =
+        await db.delete('nearby_people', where: 'id = ?', whereArgs: [id]);
+
+    if (familyMemberId is num) {
+      await deleteFamilyMemberWithCleanup(familyMemberId.toInt());
+    }
+
+    return deleted;
   }
 
   static Future<int?> confirmNearbyPersonAsFamilyMember(String nearbyId) async {
@@ -508,7 +1243,42 @@ class LocalDatabase {
   }
 
   static Future<int> deleteFamilyMember(int id) async {
+    return deleteFamilyMemberWithCleanup(id);
+  }
+
+  /// 删除家庭成员并清理关联照片、周围人确认状态。
+  static Future<int> deleteFamilyMemberWithCleanup(int id) async {
+    final member = await getFamilyMemberById(id);
+    if (member == null) return 0;
+
+    final photoPath = (member['photo_path'] as String?)?.trim();
+    if (photoPath != null && photoPath.isNotEmpty) {
+      await LocalMediaStorage.deleteFileIfExists(photoPath);
+    }
+
     final db = await instance();
+    final nearbyRows = await db.query(
+      'nearby_people',
+      where: 'family_member_id = ?',
+      whereArgs: [id],
+    );
+    for (final row in nearbyRows) {
+      final metadata = _mergeMetadata(row['metadata'] as String?, {});
+      metadata.remove('confirmed_as_family_member');
+      metadata.remove('family_member_id');
+      metadata.remove('confirmed_at');
+      await db.update(
+        'nearby_people',
+        {
+          'family_member_id': null,
+          'metadata': json.encode(metadata),
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [row['id']],
+      );
+    }
+
     return db.delete('family_members', where: 'id = ?', whereArgs: [id]);
   }
 
@@ -624,6 +1394,34 @@ class LocalDatabase {
   }
 
   static Future<int> deleteMemoryEvent(int id) async {
+    return deleteMemoryEventWithCleanup(id);
+  }
+
+  /// 删除重要经历并清理关联媒体文件（photo_paths / video_path）。
+  static Future<int> deleteMemoryEventWithCleanup(int id) async {
+    final event = await getMemoryEventById(id);
+    if (event == null) return 0;
+
+    final rawPaths = event['photo_paths'] as String?;
+    if (rawPaths != null && rawPaths.isNotEmpty) {
+      try {
+        final decoded = json.decode(rawPaths);
+        if (decoded is List) {
+          for (final item in decoded) {
+            final path = item?.toString().trim() ?? '';
+            if (path.isNotEmpty) {
+              await LocalMediaStorage.deleteFileIfExists(path);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    final videoPath = (event['video_path'] as String?)?.trim();
+    if (videoPath != null && videoPath.isNotEmpty) {
+      await LocalMediaStorage.deleteFileIfExists(videoPath);
+    }
+
     final db = await instance();
     return db.delete('memory_events', where: 'id = ?', whereArgs: [id]);
   }
@@ -734,8 +1532,98 @@ class LocalDatabase {
   }
 
   static Future<int> deleteProfilePhoto(String id) async {
+    return deleteProfilePhotoWithMedia(id);
+  }
+
+  /// 删除照片档案并移除磁盘文件。
+  static Future<int> deleteProfilePhotoWithMedia(String id) async {
+    final photo = await getProfilePhotoById(id);
+    if (photo == null) return 0;
+
+    await LocalMediaStorage.deleteFileIfExists(photo.filePath);
+
+    if (photo.category == ProfilePhotoCategory.avatar) {
+      final user = await getUserById(photo.ownerUserId);
+      if (user?['avatar_path'] == photo.filePath) {
+        await updateUser(photo.ownerUserId, {'avatar_path': ''});
+      }
+    }
+    if (photo.familyMemberId != null) {
+      final member = await getFamilyMemberById(photo.familyMemberId!);
+      if (member?['photo_path'] == photo.filePath) {
+        await updateFamilyMember(photo.familyMemberId!, {'photo_path': ''});
+      }
+    }
+    if (photo.memoryEventId != null) {
+      await _removePathFromMemoryEventPhotos(
+        photo.memoryEventId!,
+        photo.filePath,
+      );
+    }
+
     final db = await instance();
     return db.delete('profile_photos', where: 'id = ?', whereArgs: [id]);
+  }
+
+  static Future<void> _removePathFromMemoryEventPhotos(
+    int eventId,
+    String filePath,
+  ) async {
+    final row = await getMemoryEventById(eventId);
+    final raw = row?['photo_paths'] as String?;
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final paths = List<String>.from(json.decode(raw));
+      if (!paths.remove(filePath)) return;
+      await updateMemoryEvent(eventId, {
+        'photo_paths': json.encode(paths),
+      });
+    } catch (_) {}
+  }
+
+  // --- 表5：视频档案 profile_videos ---
+
+  static Future<void> insertProfileVideo(ProfileVideoModel video) async {
+    final db = await instance();
+    await ensureUserExists(video.ownerUserId);
+    await db.insert(
+      'profile_videos',
+      video.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  static Future<ProfileVideoModel?> getProfileVideoById(String id) async {
+    final db = await instance();
+    final rows =
+        await db.query('profile_videos', where: 'id = ?', whereArgs: [id]);
+    if (rows.isEmpty) return null;
+    return ProfileVideoModel.fromMap(rows.first);
+  }
+
+  static Future<List<ProfileVideoModel>> listProfileVideosForUser(
+    String ownerUserId,
+  ) async {
+    final db = await instance();
+    final rows = await db.query(
+      'profile_videos',
+      where: 'owner_user_id = ?',
+      whereArgs: [ownerUserId],
+      orderBy: 'is_favorite DESC, updated_at DESC',
+    );
+    return rows.map(ProfileVideoModel.fromMap).toList();
+  }
+
+  static Future<int> deleteProfileVideo(String id) async {
+    return deleteProfileVideoWithMedia(id);
+  }
+
+  static Future<int> deleteProfileVideoWithMedia(String id) async {
+    final video = await getProfileVideoById(id);
+    if (video == null) return 0;
+    await LocalMediaStorage.deleteFileIfExists(video.filePath);
+    final db = await instance();
+    return db.delete('profile_videos', where: 'id = ?', whereArgs: [id]);
   }
 
   static Future<ProfilePhotoModel?> getProfilePhotoById(String id) async {
@@ -1195,9 +2083,38 @@ class LocalDatabase {
     );
   }
 
-  /// 删除单条消息（attachments 表通过外键级联删除）。
+  /// 删除单条消息，并清理关联附件文件与档案。
   static Future<void> deleteMessageById(String messageId) async {
     final db = await instance();
+    final attachments = await getAttachmentsForMessage(messageId);
+    for (final att in attachments) {
+      final path = att['file_path'] as String?;
+      await LocalMediaStorage.deleteFileIfExists(path);
+      final type = att['type'] as String? ?? '';
+      final attId = att['id'] as String?;
+      if (type == 'video' && attId != null) {
+        await db.delete('profile_videos', where: 'id = ?', whereArgs: [attId]);
+      }
+      final metaRaw = att['metadata'] as String?;
+      if (metaRaw != null && metaRaw.isNotEmpty) {
+        try {
+          final meta = Map<String, dynamic>.from(json.decode(metaRaw));
+          final photoId = meta['profile_photo_id'] as String?;
+          if (photoId != null) {
+            await deleteProfilePhotoWithMedia(photoId);
+          }
+        } catch (_) {}
+      }
+    }
+    final videoRows = await db.query(
+      'profile_videos',
+      where: 'message_id = ?',
+      whereArgs: [messageId],
+    );
+    for (final row in videoRows) {
+      await deleteProfileVideoWithMedia(row['id'] as String);
+    }
+
     final rows = await db.query(
       'messages',
       columns: ['conversation_id'],
@@ -1290,6 +2207,10 @@ class LocalDatabase {
       ownerUserId,
       limit: photoLimit,
     );
+    final videos = (await listProfileVideosForUser(ownerUserId))
+        .take(photoLimit)
+        .map((v) => v.toMap())
+        .toList();
     final conflicts = await getPendingRelationConflicts(ownerUserId);
     final cognitive = await listCognitiveTestsForUser(
       ownerUserId,
@@ -1307,6 +2228,7 @@ class LocalDatabase {
           ? nearby
           : nearby.take(nearbyLimit).toList(),
       profilePhotoRows: photos,
+      profileVideoRows: videos,
       pendingRelationConflicts: conflicts,
       cognitiveTests: cognitive,
     );

@@ -9,6 +9,7 @@ build/
 windows/flutter/ephemeral/
 macos/Flutter/ephemeral/
 linux/flutter/ephemeral/
+.docs/
 
 # IDE
 .idea/

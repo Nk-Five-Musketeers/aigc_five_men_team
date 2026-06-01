@@ -119,3 +119,56 @@
 - `nearby_people` 现在继续作为人物候选/缓冲层；新增确认动作后，会同步到 `family_members` 并记录 `family_member_id` 与确认 metadata。
 - 旧默认用户初始化曾使用 `ConflictAlgorithm.replace`，会有覆盖已录入档案的风险；已改为 `ignore`，避免应用启动时清空预录入字段。
 - 当前照片交互已接入官方 `file_selector`，桌面/移动端选择图片后复制到应用数据目录；Web 端选择图片后以 data URI 写入 SQLite Web/IndexedDB，并用 `storage_type = web_local` 区分。
+
+## 语音朗读 TTS 调研（2026-05-31）
+- 用户提供的官方 DOCX：`D:\桌面\新建 DOCX 文档 (2).docx`，文档标题为“音频生成”，标注更新时间 `2026-04-22 06:01:19`。
+- 该文档描述的是 vivo 在线语音合成流式 API，不是 Flutter 端系统 TTS：
+  - WebSocket 地址：`wss://api-ai.vivo.com.cn/tts`
+  - 请求协议：`wss`
+  - 响应：JSON
+  - 音频：`24KHz`、`16bit`、单通道；文档主流程使用 PCM。
+- WebSocket 握手鉴权：
+  - Header `Authorization: Bearer AppKey`
+  - 文档参数表还列出 `X-AI-GATEWAY-SIGNATURE: developers-aigc`
+  - URL 必填参数：`engineid`、`system_time`、`user_id`、`model`、`product`、`package`、`client_version`、`system_version`、`sdk_version`、`android_version`、`requestId`
+  - 官方 Python 示例只显式传 `Authorization`，并额外传了 `vaid`；文档表格与示例存在少量差异，实施时需要用真实密钥联调确认。
+- 对话朗读推荐引擎：`short_audio_synthesis_jovi`。文档说明短音频合成适用于对话合成/语音助手；长文本屏幕朗读可用 `long_audio_synthesis_screen`。
+- 文本合成 JSON 请求字段：
+  - `aue`: `0` PCM，`1` Opus
+  - `auf`: `audio/L16;rate=24000`
+  - `vcn`: 发音人
+  - `speed`: 可选 `[0-100]`，默认 `50`
+  - `volume`: 可选 `[1-100]`，默认 `50`
+  - `text`: UTF-8 文本 Base64；Base64 前最大 `2048` 字节
+  - `encoding`: `utf8`
+  - `reqId`: 请求 ID
+- 推荐初始音色：短音频引擎可用 `vivoHelper`（奕雯）、`yunye`（云野-温柔）、`wanqing`、`xiaofu`、`yige_child`、`yige`、`yiyi`、`xiaoming`。面向老人陪伴场景，优先考虑 `yunye` 或 `vivoHelper`，最终由用户确认。
+- 流式响应字段：
+  - `error_code == 0` 表示成功
+  - `data.audio` 为 Base64 音频片段
+  - `data.status`: `0` 第一帧，`1` 合成中，`2` 最后一帧
+  - `data.slice` 帧序号，`data.progress` 合成进度
+  - 官方示例持续拼接 PCM 片段，结束后封装为 WAV：单声道、16bit、24000Hz。
+- 当前项目已有 ASR，但没有 TTS：
+  - Flutter 端已有 `lib/core/voice_input/`：默认 vivo ASR，失败回退系统 `speech_to_text`。
+  - Python 代理已有 `/api/asr/transcribe` 与 `/api/speech/polish`，可新增并行的 `/api/tts/synthesize`。
+  - 当前依赖中没有音频播放库；TTS 接入需要补充跨 Windows / Android / Web 的播放方案。
+  - 对话 UI 渲染入口在 `lib/ui/screens/home_screen.dart` 的 `_ChatMessageView`、`_MessageBubble`、`_PromptCard`、`_ChatPhotoBubble`，适合在拾忆回复旁增加朗读按钮，并维护单一播放状态。
+- 推荐沿用已有 ASR 本地代理架构：Flutter 通过 `/api/tts/synthesize` 提交文本，Python 代理连接 Vivo TTS WebSocket，把 PCM 分片包装为 WAV 后返回。
+- Flutter 播放层建议采用 `audioplayers`。其官方 pub.dev 页面说明支持 Android、iOS、Linux、macOS、Web、Windows；`BytesSource` 可以直接播放内存字节，适合本项目的 WAV 响应。
+- 推荐第一版仅为“拾忆”的文字回复提供点击朗读，不自动播放；同一时间只播放一条消息，并对合成结果做内存缓存。
+- 已新增独立设计文档 `tts_read_aloud_plan.md`，包含接口契约、文件级修改清单、验证方案和待确认事项。
+- 用户已确认首版产品边界：仅朗读“拾忆”回复、仅点击播放、默认音色 `yunye`、设置页开放语速和音量调节，默认值均为 `50`。
+- 用户提供 Vivo `APP_ID=2026594139`。现有 AppKey 是否开通 TTS 权限，以及线上实际是否要求 `APP_ID`，留待最小化真实请求确认。
+- 用户确认 TTS 工作直接在当前 `main` 分支继续。第一版先完成 Windows 双终端验收，代码结构保持 Android / Web 可复用。
+
+## 语音朗读 TTS 实施结果（2026-05-31）
+- Python 新增 `server/speech_synthesis.py`：支持 `2048` UTF-8 字节安全切分、Vivo WebSocket 握手、PCM 分片拼接和单声道 16bit 24000Hz WAV 封装。
+- Python 新增 `server/tts_http.py` 和 `/api/tts/synthesize`：默认 `voice=yunye`、`speed=50`、`volume=50`，参数错误返回 400，上游 TTS 错误返回 502。
+- `/health` 新增 `vivo_tts` 和 `vivo_tts_app_id`；未配置 AppKey 的本地探测返回 `vivo_tts=false` 和默认 `APP_ID=2026594139`。
+- Flutter 新增 `lib/core/voice_output/` 与 `VoiceOutputProvider`：Dio 请求 WAV、`audioplayers` 播放内存字节、同一时间单条播放、重复点击停止、切换回复停止上一条、文本与参数组合缓存。
+- 朗读设置使用 `shared_preferences` 持久化；设置页开放朗读语速和音量，默认均为 `50`。
+- 聊天界面只为拾忆的非错误回复显示朗读按钮；不会自动朗读，老人消息不显示按钮。
+- 已安装 Python `websocket-client 1.9.0`。旧 pip 需要把 HTTP/HTTPS/ALL 代理统一临时设为 `http://127.0.0.1:7898` 后才能完成安装。
+- 尚未进行真实 Vivo TTS 上游联调：当前会话没有填入有效 `VIVO_APP_KEY`。需用真实密钥确认 TTS 权限、签名 Header 和 `vaid=APP_ID` 组合。
+- Web Debug 构建已通过，静态服务探测 `index.html` 与 `main.dart.js` 均为 HTTP 200。内置浏览器连接持续超时，因此本轮没有完成网页截图与手动点击验收。

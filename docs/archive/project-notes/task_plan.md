@@ -76,7 +76,7 @@ Phase 2
 - 所有探索发现要同步写入 `findings.md`，阶段进展写入 `progress.md`。
 - 详细待办见 `data_preentry_todo.md`。
 - 后续所有命令工作目录使用 `D:\桌面\vivo-project\aigc_five_men_team`。
-- 当前分支：`terryi-new`。
+- 当前分支：`main`。用户已确认本轮 TTS 开发直接在 `main` 上继续。
 - 最终运行/验收命令：
   - 终端 1：`$env:VIVO_APP_KEY=""`，然后 `python server\local_chat_server.py`
   - 终端 2：`flutter run -d windows`
@@ -90,3 +90,45 @@ Phase 2
   - `flutter_tools.dart build windows --debug` 通过，生成 Windows Debug 可执行文件。
   - `flutter_tools.dart build web --debug` 通过，生成 Web Debug 产物。
 - 暂未完成：系统文件选择器插件和 Web 图片二进制长期保存仍保留为后续增强；当前照片录入通过本机路径复制到应用数据目录。
+
+## 新任务：对话语音朗读 TTS
+
+### Goal
+在老人和“拾忆”的聊天过程中，为“拾忆”的回复提供可点击朗读能力；优先接入用户提供的 vivo 在线语音合成流式 API，并保持 Windows 当前验收链路可运行，后续兼顾 Android 和 Web。
+
+### Current Phase
+TTS Phase 4
+
+### TTS Phase 1：官方文档与现有链路调研
+- [x] 阅读用户提供的 vivo 官方 DOCX
+- [x] 梳理 WebSocket 地址、鉴权字段、请求参数、返回音频格式和错误码
+- [x] 定位现有 Flutter ASR、Python 本地代理与对话消息渲染位置
+- [x] 检索官方在线页面；公开搜索未找到可独立核对的 vivo TTS 页面，记录文档参数表与示例差异
+- **Status:** completed
+
+### TTS Phase 2：交互与边界确认
+- [x] 仅朗读“拾忆”回复，老人消息不提供回听按钮
+- [x] 仅点击后播放，不在收到回复后自动朗读
+- [x] 默认音色 `yunye`，默认语速和音量均为 `50`
+- [x] 设置页开放语速和音量调节
+- [x] 第一版先按 Windows 双终端验收，结构兼顾 Android / Web
+- [x] 已提供 `APP_ID=2026594139`
+- [ ] 联调确认现有 AppKey 是否开通 TTS 权限，以及线上是否需要使用 `APP_ID`
+- **Status:** completed
+
+### TTS Phase 3：技术设计
+- [x] 设计 Python `tts` WebSocket 客户端：鉴权、PCM 拼接、WAV 封装、超时与错误映射
+- [x] 设计本地代理 `/api/tts/synthesize`：接收文本和音色参数，返回 `audio/wav`
+- [x] 设计 Flutter `voice_output` 模块：请求代理、播放/停止、单一播放状态、重复点击与切换消息处理
+- [x] 选择跨端音频播放依赖 `audioplayers`，确认 Windows / Android / Web 支持矩阵
+- [x] 设计聊天气泡朗读按钮、内存缓存和设置页可选项
+- [x] 输出独立设计文档 `tts_read_aloud_plan.md`
+- **Status:** completed
+
+### TTS Phase 4：实施与验证
+- [ ] 用真实 AppKey 执行最小化 TTS 请求，核对签名 Header 与 `APP_ID` 实际要求
+- [x] 先补测试，再实现 Python TTS 客户端与代理路由
+- [x] 实现 Flutter TTS repository/service 与 UI 状态
+- [x] 验证短回复、长回复切分、快速切换、停止、错误提示和代理未启动场景
+- [x] 完成 Windows Debug 构建验收
+- **Status:** implemented; pending live AppKey verification

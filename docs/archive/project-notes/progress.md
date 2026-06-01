@@ -120,3 +120,63 @@
   - `flutter_tools.dart test test\profile_photo_model_test.dart test\pre_entry_mapper_test.dart test\widget_test.dart`：4 项测试全部通过。
   - `flutter_tools.dart build windows --debug`：Windows Debug 构建通过，生成 `build\windows\x64\runner\Debug\aigc_five_men_team.exe`。
   - `flutter_tools.dart build web --debug`：Web Debug 构建通过，生成 `build\web`。
+
+## Session: 2026-05-31
+
+### TTS Phase 1: 官方文档与现有链路调研
+- **Status:** completed
+- Actions taken:
+  - 读取并应用 `planning-with-files` 技能说明，恢复现有 `task_plan.md`、`findings.md`、`progress.md`。
+  - 确认当前 Git 分支为 `main`，工作区已有 `theme.dart`、`home_screen.dart`、生成文件和 Claude UI 规划文档等未提交改动；本轮不覆盖这些改动。
+  - 读取用户提供的 `D:\桌面\新建 DOCX 文档 (2).docx`，解压并按段落抽取 `word/document.xml`。
+  - 确认官方文档为 vivo 在线语音合成流式 WebSocket API，地址 `wss://api-ai.vivo.com.cn/tts`。
+  - 梳理鉴权 Header、URL 参数、请求 JSON、短/长文本引擎、短音频音色、PCM 流式返回字段和官方 PCM 转 WAV 示例。
+  - 检索项目当前语音链路：Flutter 已有 vivo ASR + 系统听写回退；Python 代理已有 `/api/asr/transcribe` 与 `/api/speech/polish`，但没有 TTS；Flutter 依赖也没有音频播放库。
+  - 定位聊天 UI 的消息渲染入口：`_ChatMessageView`、`_MessageBubble`、`_PromptCard`、`_ChatPhotoBubble`。
+  - 在 `task_plan.md` 新增 TTS 任务阶段，在 `findings.md` 记录官方文档关键信息。
+  - 查询 `audioplayers` 官方 pub.dev 页面，确认其覆盖 Windows、Android、Web，并支持从内存 WAV 字节播放。
+
+### TTS Phase 2: 接入方案与需求确认
+- **Status:** completed
+- Actions taken:
+  - 新增独立方案文档 `tts_read_aloud_plan.md`。
+  - 记录首版交互建议、服务端 HTTP 契约、Flutter 播放模块、内存缓存、文件级改动和验证步骤。
+- Pending:
+  - 用真实 AppKey 联调确认 TTS 权限、`APP_ID` 和签名 Header 的线上要求。
+- Confirmed:
+  - 仅朗读“拾忆”的回复，不为老人消息显示回听按钮。
+  - 仅点击后朗读，不自动播放新回复。
+  - 默认音色使用 `yunye`，语速和音量默认均为 `50`。
+  - 设置页开放语速和音量调节。
+  - 用户提供 `APP_ID=2026594139`。
+  - TTS 开发在 `main` 分支继续；首版先完成 Windows 双终端验收，代码结构兼顾 Android / Web。
+
+### TTS Phase 3: 实施计划
+- **Status:** completed
+- Actions taken:
+  - 用户批准方案 A：Python 本地代理完整合成 WAV 后返回 Flutter。
+  - 抽取官方 DOCX Python 示例，确认示例读取 `APP_ID` 但没有稳定传出，仅写入固定 `vaid`；实现将使用可覆盖的 `APP_ID=2026594139` 填充 `vaid`，并携带参数表要求的签名 Header。
+  - 新增 `docs/superpowers/plans/2026-05-31-chat-read-aloud-tts.md`，按测试驱动方式拆分服务端合成、HTTP 路由、Flutter 播放状态、UI 接入和验证步骤。
+
+### TTS Phase 4: 实施与验证
+- **Status:** implemented; pending live AppKey verification
+- Implemented:
+  - 新增 Python TTS 合成内核、HTTP 参数适配器和 `/api/tts/synthesize` 路由。
+  - 新增 `/health` 的 `vivo_tts` 与 `vivo_tts_app_id` 字段。
+  - 新增 Flutter TTS repository、播放器封装、设置持久化与 `VoiceOutputProvider`。
+  - 拾忆非错误回复下方新增手动朗读按钮；再次点击停止，切换消息时停止旧音频。
+  - 设置页新增朗读语速和朗读音量滑块，默认均为 `50`。
+  - README 补充 Python 语音依赖、`VIVO_APP_ID` 和 TTS 常见问题。
+- Verification:
+  - `python -B -m unittest server.test_speech_synthesis server.test_tts_http -v`：8 项通过。
+  - 本地代理 `/health`：返回 `vivo_tts=false` 与 `vivo_tts_app_id=2026594139`；未设置密钥时 `/api/tts/synthesize` 返回明确 Missing AppKey 错误。
+  - `flutter test`：45 项全部通过。
+  - `dart analyze`：仅剩 11 条仓库既有提示，本次新增代码未引入提示。
+  - `flutter build windows --debug`：通过，生成 `build\windows\x64\runner\Debug\aigc_five_men_team.exe`。
+  - `flutter build web --debug`：通过，生成 `build\web`。
+  - 使用本地静态服务探测 Web 产物：`index.html` 与 `main.dart.js` 均返回 HTTP 200；内置浏览器连接持续超时，未能完成截图与点击检查。
+- Environment notes:
+  - `python -m compileall -q server` 会被既有只读 `server/__pycache__` 阻止覆盖；改用 `PYTHONDONTWRITEBYTECODE=1` 与 `python -B` 完成 Python 验证。
+  - 已安装 `websocket-client 1.9.0`。当前机器旧 pip 需要统一单次 HTTP 代理为 `http://127.0.0.1:7898`。
+- Remaining:
+  - 当前会话没有有效 `VIVO_APP_KEY`，无法执行真实上游语音播放联调。需用实际密钥确认 TTS 权限、签名 Header 和 `vaid=APP_ID`。

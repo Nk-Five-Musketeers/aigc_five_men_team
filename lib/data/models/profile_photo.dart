@@ -226,6 +226,18 @@ class ProfilePhotoModel {
     );
   }
 
+  bool get isVideo {
+    final mediaType = metadata?['media_type']?.toString();
+    if (mediaType == 'video') return true;
+    final lower = filePath.toLowerCase();
+    return lower.endsWith('.mp4') ||
+        lower.endsWith('.mov') ||
+        lower.endsWith('.avi') ||
+        lower.endsWith('.mkv') ||
+        lower.endsWith('.webm') ||
+        lower.endsWith('.m4v');
+  }
+
   ProfilePhotoModel copyWith({
     String? filePath,
     ProfilePhotoStorageType? storageType,

@@ -21,7 +21,12 @@ flutter doctor -v
 ### 2. Python 3（启动本地代理）
 
 - 用于运行 `server/local_chat_server.py`。
-- 该脚本**仅使用 Python 标准库**，无需 `pip install` 额外包；任意较新的 Python 3 即可。
+- 聊天转发仅使用 Python 标准库；vivo ASR 与 TTS 需要 `websocket-client`。
+- 安装语音依赖：
+
+```bash
+python -m pip install -r server/requirements-asr.txt
+```
 
 ### 3. 可选：IDE 与插件
 
@@ -62,6 +67,11 @@ flutter pub get
 - **`VIVO_APP_KEY`**（推荐）
 - **`APP_KEY`**
 
+语音朗读默认使用项目 `APP_ID=2026594139`。如需覆盖，可额外设置：
+
+- **`VIVO_APP_ID`**（推荐）
+- **`APP_ID`**
+
 将团队提供的 **AppKey / Bearer Token** 设为上述变量之一。
 
 **Windows（PowerShell）示例**（当前会话有效）：
@@ -69,6 +79,7 @@ flutter pub get
 ```powershell
 cd D:\AIGC\aigc_five_men_team
 $env:VIVO_APP_KEY = "这里粘贴团队提供的密钥"
+$env:VIVO_APP_ID = "2026594139" # 可选，未设置时使用项目默认值
 python server\local_chat_server.py
 ```
 
@@ -77,6 +88,7 @@ python server\local_chat_server.py
 ```bash
 cd /path/to/aigc_five_men_team
 export VIVO_APP_KEY="这里粘贴团队提供的密钥"
+export VIVO_APP_ID="2026594139" # 可选，未设置时使用项目默认值
 python3 server/local_chat_server.py
 ```
 
@@ -97,7 +109,7 @@ $env:PORT = "8000"
 http://127.0.0.1:8000/health
 ```
 
-若返回 JSON 中含 `"ok": true` 且 `"has_server_key": true`，说明服务与密钥正常。
+若返回 JSON 中含 `"ok": true`、`"has_server_key": true` 且 `"vivo_tts": true`，说明服务与语音朗读密钥正常。
 
 ### 5. 运行 Flutter 应用
 
@@ -141,6 +153,8 @@ flutter run -d android --dart-define=API_BASE_URL=http://10.0.2.2:8000
 |------|----------|
 | 应用提示无法连接 / 超时 | 确认代理已启动、`/health` 正常；Windows 注意是否被防火墙拦截。 |
 | 代理返回 Missing AppKey | 未设置 `VIVO_APP_KEY` 或 `APP_KEY`，或设置后未在同一终端会话中启动 `python`。 |
+| 点击朗读后提示缺少 `websocket-client` | 执行 `python -m pip install -r server/requirements-asr.txt`，再重启代理。 |
+| 点击朗读后 vivo 返回鉴权错误 | 确认 AppKey 已开通 TTS 权限；如控制台分配了不同 APP_ID，设置 `VIVO_APP_ID` 后重启代理。 |
 | `flutter doctor` 报 Windows 桌面相关错误 | 安装 Visual Studio 并勾选「使用 C++ 的桌面开发」。 |
 | Web（Chrome）运行 | 已使用 `sqflite_common_ffi_web`；若遇存储或跨域问题，优先用 Windows/Android 真机或模拟器对照。 |
 
@@ -156,6 +170,7 @@ aigc_five_men_team/
 │   ├── core/
 │   │   ├── api_client.dart       # Dio → 本地代理
 │   │   ├── voice_input/          # 语音输入（vivo ASR + 系统听写回退）
+│   │   ├── voice_output/         # 语音朗读（TTS 请求、内存 WAV 播放、设置持久化）
 │   │   └── utils/                # 工具占位（权限、日期等）
 │   ├── data/
 │   │   ├── local_db/             # SQLite（应用主库 bluecare.db）
@@ -170,6 +185,8 @@ aigc_five_men_team/
 ├── server/                       # 本地 Python 服务（运行时依赖）
 │   ├── local_chat_server.py      # :8000 聊天代理（启动时 cwd 建议在项目根或 server）
 │   ├── speech_recognition.py     # vivo 云端 ASR 客户端（独立脚本用）
+│   ├── speech_synthesis.py       # vivo 云端 TTS 客户端（PCM 分片拼接为 WAV）
+│   ├── tts_http.py               # TTS 本地 HTTP 请求校验
 │   ├── database.py               # 服务端 SQLite 辅助（与 Flutter 库分离）
 │   ├── prompts/                  # 场景 system 提示词组合
 │   ├── scripts/                  # 开发/填表脚本（非应用启动必需）
@@ -184,7 +201,7 @@ aigc_five_men_team/
 
 ### 1. 核心与配置
 
-- `lib/main.dart` — 应用入口，`Provider` 注入 `ChatProvider`。
+- `lib/main.dart` — 应用入口，`Provider` 注入 `ChatProvider` 与 `VoiceOutputProvider`。
 - `lib/config/constants.dart` — 应用名、默认模型 ID、`API_BASE_URL`（可通过 `--dart-define=API_BASE_URL=...` 覆盖）。
 - `lib/config/theme.dart` — 主题与适老化视觉。
 - `lib/core/api_client.dart` — `Dio` 客户端，请求发往本地代理或你配置的 `API_BASE_URL`。
@@ -199,6 +216,7 @@ aigc_five_men_team/
 ### 3. 业务逻辑
 
 - `lib/logic/chat_provider.dart` — 会话状态、发送消息、语音润色、本地持久化与关系抽取调度。
+- `lib/logic/voice_output_provider.dart` — 拾忆回复朗读状态、单一播放控制、WAV 内存缓存与语速音量设置。
 - `lib/logic/relation_extractor.dart` — 从对话中合并、规范化人际关系线索。
 
 ### 4. UI
@@ -207,8 +225,9 @@ aigc_five_men_team/
 
 ### 5. 本地代理与脚本
 
-- `server/local_chat_server.py` — 本地 HTTP 代理：读取 `VIVO_APP_KEY` / `APP_KEY`，转发至 vivo 聊天接口。
+- `server/local_chat_server.py` — 本地 HTTP 代理：读取 `VIVO_APP_KEY` / `APP_KEY`，转发聊天、ASR 与 TTS 请求。
 - `server/speech_recognition.py` — vivo WebSocket ASR（命令行或后续扩展，**非** Flutter 当前语音路径）。
+- `server/speech_synthesis.py` — vivo WebSocket TTS：将拾忆回复合成为 WAV；默认音色为 `yunye`。
 - `server/database.py` — 服务端辅助 SQLite（与 Flutter `local_database` 独立）。
 - `server/scripts/populate_tables.py` — 填表/导入测试数据。
 - `server/scripts/create_test_user.py` — 创建服务端测试用户。

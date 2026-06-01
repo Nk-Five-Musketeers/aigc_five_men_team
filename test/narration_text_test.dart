@@ -27,6 +27,17 @@ void main() {
     );
   });
 
+  test('splitNarrationSentences softly splits overly long comma sentences', () {
+    final sentences = splitNarrationSentences(
+      '我们记得，你曾经站在讲台上，把许多知识慢慢讲给别人听，也把认真生活的样子留在家里人的记忆里，那些日子后来被我们反复想起。',
+    );
+
+    expect(sentences.length, greaterThan(1));
+    expect(sentences.every((sentence) => sentence.endsWith('。')), isTrue);
+    expect(sentences.join(), contains('讲台上'));
+    expect(sentences.join(), contains('反复想起'));
+  });
+
   test('buildAlbumNarration creates ordered segments for album pages', () {
     const album = MemoryAlbum(
       albumId: 'album_001',

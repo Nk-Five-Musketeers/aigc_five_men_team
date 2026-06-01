@@ -9,9 +9,57 @@ List<String> splitNarrationSentences(String text) {
   for (final match in matches) {
     final sentence = match.group(0)?.trim() ?? '';
     if (sentence.isEmpty) continue;
-    sentences.add(sentence);
+    sentences.addAll(_splitLongNarrationSentence(sentence));
   }
   return sentences;
+}
+
+List<String> _splitLongNarrationSentence(String sentence) {
+  const maxLength = 46;
+  const minPartLength = 14;
+  final trimmed = sentence.trim();
+  if (trimmed.length <= maxLength) return [trimmed];
+
+  final sentenceEnd = RegExp(r'[。！？!?；;]$').firstMatch(trimmed)?.group(0);
+  final body = sentenceEnd == null
+      ? trimmed
+      : trimmed.substring(0, trimmed.length - sentenceEnd.length);
+  final commaMatches = RegExp(r'[^，,、]+[，,、]?').allMatches(body);
+  final commaParts = commaMatches
+      .map((match) => match.group(0)?.trim() ?? '')
+      .where((part) => part.isNotEmpty)
+      .toList();
+  if (commaParts.length < 2) return [trimmed];
+
+  final chunks = <String>[];
+  var current = '';
+  for (final part in commaParts) {
+    final candidate = current + part;
+    if (current.isNotEmpty &&
+        candidate.length > maxLength &&
+        current.length >= minPartLength) {
+      chunks.add(_ensureNarrationPunctuation(current));
+      current = part;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.isNotEmpty) {
+    chunks.add(_ensureNarrationPunctuation(current, fallback: sentenceEnd));
+  }
+
+  if (chunks.length < 2 ||
+      chunks.any((chunk) => chunk.length < minPartLength)) {
+    return [trimmed];
+  }
+  return chunks;
+}
+
+String _ensureNarrationPunctuation(String value, {String? fallback}) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) return '';
+  if (RegExp(r'[。！？!?；;]$').hasMatch(trimmed)) return trimmed;
+  return '$trimmed${fallback ?? '。'}';
 }
 
 List<String> splitNarrationBlock({

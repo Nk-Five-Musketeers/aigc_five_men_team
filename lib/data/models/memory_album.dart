@@ -34,20 +34,29 @@ class MemoryAlbum {
   }
 
   MemoryAlbum copyWith({
+    String? albumTitle,
+    String? albumSubtitle,
+    AlbumCover? cover,
+    AlbumText? opening,
+    ElderProfileCard? elderProfileCard,
+    List<MemoryAlbumChapter>? chapters,
+    AlbumText? ending,
+    List<FamilyQuestion>? familyQuestions,
+    AlbumNotes? notes,
     MemoryAlbumNarration? narration,
   }) {
     return MemoryAlbum(
       albumId: albumId,
-      albumTitle: albumTitle,
-      albumSubtitle: albumSubtitle,
-      cover: cover,
-      opening: opening,
-      elderProfileCard: elderProfileCard,
-      chapters: chapters,
+      albumTitle: albumTitle ?? this.albumTitle,
+      albumSubtitle: albumSubtitle ?? this.albumSubtitle,
+      cover: cover ?? this.cover,
+      opening: opening ?? this.opening,
+      elderProfileCard: elderProfileCard ?? this.elderProfileCard,
+      chapters: chapters ?? this.chapters,
       timeline: timeline,
-      ending: ending,
-      familyQuestions: familyQuestions,
-      notes: notes,
+      ending: ending ?? this.ending,
+      familyQuestions: familyQuestions ?? this.familyQuestions,
+      notes: notes ?? this.notes,
       narration: narration ?? this.narration,
     );
   }
@@ -133,6 +142,17 @@ class AlbumCover {
         'cover_text': coverText,
         'recommended_cover_photo_id': recommendedCoverPhotoId,
       };
+
+  AlbumCover copyWith({
+    String? coverText,
+  }) {
+    return AlbumCover(
+      title: title,
+      subtitle: subtitle,
+      coverText: coverText ?? this.coverText,
+      recommendedCoverPhotoId: recommendedCoverPhotoId,
+    );
+  }
 }
 
 class AlbumText {
@@ -148,6 +168,15 @@ class AlbumText {
         'title': title,
         'content': content,
       };
+
+  AlbumText copyWith({
+    String? content,
+  }) {
+    return AlbumText(
+      title: title,
+      content: content ?? this.content,
+    );
+  }
 }
 
 class ElderProfileCard {
@@ -166,6 +195,16 @@ class ElderProfileCard {
         'content': content,
         'profile_items': profileItems.map((item) => item.toJson()).toList(),
       };
+
+  ElderProfileCard copyWith({
+    String? content,
+  }) {
+    return ElderProfileCard(
+      title: title,
+      content: content ?? this.content,
+      profileItems: profileItems,
+    );
+  }
 }
 
 class ProfileItem {
@@ -208,6 +247,20 @@ class MemoryAlbumChapter {
         'chapter_type': chapterType,
         'items': items.map((item) => item.toJson()).toList(),
       };
+
+  MemoryAlbumChapter copyWith({
+    String? chapterIntro,
+    List<MemoryAlbumItem>? items,
+  }) {
+    return MemoryAlbumChapter(
+      chapterId: chapterId,
+      chapterTitle: chapterTitle,
+      chapterSubtitle: chapterSubtitle,
+      chapterIntro: chapterIntro ?? this.chapterIntro,
+      chapterType: chapterType,
+      items: items ?? this.items,
+    );
+  }
 }
 
 class MemoryAlbumItem {
@@ -238,6 +291,21 @@ class MemoryAlbumItem {
         'related_profile_fields': relatedProfileFields,
         'family_questions': familyQuestions,
       };
+
+  MemoryAlbumItem copyWith({
+    String? content,
+    List<String>? familyQuestions,
+  }) {
+    return MemoryAlbumItem(
+      itemId: itemId,
+      itemType: itemType,
+      title: title,
+      content: content ?? this.content,
+      photoId: photoId,
+      relatedProfileFields: relatedProfileFields,
+      familyQuestions: familyQuestions ?? this.familyQuestions,
+    );
+  }
 }
 
 class MemoryTimelineEntry {
@@ -298,4 +366,17 @@ class AlbumNotes {
         'possible_conflicts': possibleConflicts,
         'missing_information': missingInformation,
       };
+
+  AlbumNotes copyWith({
+    List<String>? rewrittenParts,
+    List<String>? possibleConflicts,
+  }) {
+    return AlbumNotes(
+      usedExistingAlbum: usedExistingAlbum,
+      rewrittenParts: rewrittenParts ?? this.rewrittenParts,
+      addedParts: addedParts,
+      possibleConflicts: possibleConflicts ?? this.possibleConflicts,
+      missingInformation: missingInformation,
+    );
+  }
 }

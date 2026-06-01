@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io' show File;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
@@ -50,6 +50,8 @@ class _HomeScreenState extends State<HomeScreen> {
   String _speechEngine = 'vivo';
 
   int _memoryRefreshToken = 0;
+  final MemoryAlbumRepository _memoryAlbumRepository = MemoryAlbumRepository();
+  final Set<String> _warmedAlbumUserIds = <String>{};
 
   /// 已选但未发送的附件（需点「发送」才进入对话）。
   PickedChatAttachment? _pendingAttachment;
@@ -59,6 +61,9 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _messageController.addListener(() {
       if (mounted) setState(() {});
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _warmUpMemoryAlbumAudit();
     });
   }
 
@@ -127,12 +132,14 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 12),
                 ListTile(
-                  leading: const Icon(Icons.photo_outlined, color: AppTheme.primaryDeep),
+                  leading: const Icon(Icons.photo_outlined,
+                      color: AppTheme.primaryDeep),
                   title: const Text('选择照片', style: TextStyle(fontSize: 20)),
                   onTap: () => Navigator.pop(context, 'image'),
                 ),
                 ListTile(
-                  leading: const Icon(Icons.videocam_outlined, color: AppTheme.primaryDeep),
+                  leading: const Icon(Icons.videocam_outlined,
+                      color: AppTheme.primaryDeep),
                   title: const Text('选择视频', style: TextStyle(fontSize: 20)),
                   onTap: () => Navigator.pop(context, 'video'),
                 ),
@@ -245,6 +252,9 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final chat = context.watch<ChatProvider>();
     final showChatInputs = _view == _AppView.home;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _warmUpMemoryAlbumAudit();
+    });
 
     final scaffold = Scaffold(
       backgroundColor: AppTheme.surface0,
@@ -415,6 +425,20 @@ class _HomeScreenState extends State<HomeScreen> {
         _showView(_AppView.settings);
         break;
     }
+  }
+
+  void _warmUpMemoryAlbumAudit() {
+    if (!mounted) return;
+    final userId = context.read<ChatProvider>().activeUserId;
+    if (userId.trim().isEmpty || !_warmedAlbumUserIds.add(userId)) return;
+    unawaited(
+      _memoryAlbumRepository.buildForUser(userId).then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stackTrace) {
+          debugPrint('[memory_album] warm-up failed: $error\n$stackTrace');
+        },
+      ),
+    );
   }
 
   Widget _buildView() {
@@ -905,7 +929,8 @@ class _ChatAttachmentBubble extends StatelessWidget {
               child: TappableMediaThumbnail(
                 path: isVideo ? message.videoPath! : message.imagePath!,
                 isVideo: isVideo,
-                title: message.content.trim().isNotEmpty ? message.content : null,
+                title:
+                    message.content.trim().isNotEmpty ? message.content : null,
                 child: isVideo
                     ? _MemoryVideoPreview(path: message.videoPath!)
                     : _MemoryPhotoImage(
@@ -967,7 +992,9 @@ class _ChatPhotoBubble extends StatelessWidget {
                 child: TappableMediaThumbnail(
                   path: path,
                   isVideo: false,
-                  title: message.content.trim().isNotEmpty ? message.content : null,
+                  title: message.content.trim().isNotEmpty
+                      ? message.content
+                      : null,
                   child: _MemoryPhotoImage(
                     photo: ProfilePhotoModel(
                       id: message.profilePhotoId ?? message.id,
@@ -1680,8 +1707,9 @@ class _PhotoBookViewState extends State<_PhotoBookView> {
           currentIndex: _currentIndex,
           total: pages.length,
           onPrevious: _currentIndex > 0 ? _goPrevious : null,
-          onNext:
-              _currentIndex < pages.length - 1 ? () => _goNext(pages.length) : null,
+          onNext: _currentIndex < pages.length - 1
+              ? () => _goNext(pages.length)
+              : null,
           onListen: widget.onListen,
           onRefresh: widget.onRefresh,
         ),
@@ -1706,9 +1734,8 @@ class _PhotoBookViewState extends State<_PhotoBookView> {
                 builder: (context, child) {
                   double signedOffset = 0;
                   if (_pageController.position.haveDimensions) {
-                    signedOffset =
-                        (_pageController.page ?? index.toDouble()) -
-                            index.toDouble();
+                    signedOffset = (_pageController.page ?? index.toDouble()) -
+                        index.toDouble();
                   }
                   final absOffset = signedOffset.abs().clamp(0.0, 1.5);
                   final scale = (1.0 - absOffset * 0.10).clamp(0.85, 1.0);
@@ -1726,8 +1753,8 @@ class _PhotoBookViewState extends State<_PhotoBookView> {
                   );
                 },
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 6, vertical: 12),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
                   child: pageChild,
                 ),
               );
@@ -1886,8 +1913,7 @@ class _BookPhotoPage extends StatelessWidget {
               Expanded(
                 flex: 6,
                 child: ClipRRect(
-                  borderRadius:
-                      BorderRadius.circular(AppTheme.radiusMedium),
+                  borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
                   child: SizedBox.expand(
                     child: ColoredBox(
                       color: AppTheme.surface0,
@@ -1909,8 +1935,8 @@ class _BookPhotoPage extends StatelessWidget {
               if (meta.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     color: AppTheme.accent.withValues(alpha: 0.18),
                     borderRadius: BorderRadius.circular(AppTheme.radiusPill),
@@ -2090,8 +2116,7 @@ class _PhotoDetailSheet extends StatelessWidget {
                         ),
                       ),
                     const SizedBox(height: 12),
-                    if (time.isNotEmpty)
-                      _DetailRow(label: '时间', value: time),
+                    if (time.isNotEmpty) _DetailRow(label: '时间', value: time),
                     if (location.isNotEmpty)
                       _DetailRow(label: '地点', value: location),
                     if (people.isNotEmpty)
@@ -2151,9 +2176,7 @@ class _EventDetailSheet extends StatelessWidget {
                             BorderRadius.circular(AppTheme.radiusPill),
                       ),
                       child: Text(
-                        data.chapterTitle.isEmpty
-                            ? '一段往事'
-                            : data.chapterTitle,
+                        data.chapterTitle.isEmpty ? '一段往事' : data.chapterTitle,
                         style: const TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w700,
@@ -2988,12 +3011,9 @@ class _AlbumItemPanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (photo != null) ...[
-            ClipRRect(
-              borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
-              child: SizedBox(
-                height: 190,
-                child: _MemoryPhotoImage(photo: photo!),
-              ),
+            _AlbumPhotoInsert(
+              item: item,
+              photo: photo!,
             ),
             const SizedBox(height: 12),
           ],
@@ -3070,6 +3090,198 @@ class _AlbumItemPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+class _AlbumPhotoInsert extends StatelessWidget {
+  const _AlbumPhotoInsert({
+    required this.item,
+    required this.photo,
+  });
+
+  final MemoryAlbumItem item;
+  final ProfilePhotoModel photo;
+
+  @override
+  Widget build(BuildContext context) {
+    final caption =
+        item.title.trim().isNotEmpty ? item.title : (photo.caption ?? '');
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+        onTap: () => _showPhotoMemoryDetail(context, item, photo),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+              child: SizedBox(
+                height: 190,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    _MemoryPhotoImage(photo: photo, interactive: false),
+                    Positioned(
+                      right: 10,
+                      bottom: 10,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.48),
+                          borderRadius:
+                              BorderRadius.circular(AppTheme.radiusPill),
+                        ),
+                        child: const Padding(
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          child: Text(
+                            '查看故事',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (caption.trim().isNotEmpty) ...[
+              const SizedBox(height: 7),
+              Text(
+                caption,
+                style: const TextStyle(
+                  fontSize: 17,
+                  height: 1.35,
+                  color: AppTheme.textSoft,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+void _showPhotoMemoryDetail(
+  BuildContext context,
+  MemoryAlbumItem item,
+  ProfilePhotoModel photo,
+) {
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: AppTheme.surface1,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    builder: (sheetContext) {
+      return SafeArea(
+        child: DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.82,
+          minChildSize: 0.45,
+          maxChildSize: 0.95,
+          builder: (context, controller) {
+            return ListView(
+              controller: controller,
+              padding: const EdgeInsets.fromLTRB(18, 14, 18, 24),
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        item.title,
+                        style: const TextStyle(
+                          fontSize: 24,
+                          height: 1.2,
+                          fontWeight: FontWeight.w800,
+                          color: AppTheme.text,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '返回',
+                      onPressed: () => Navigator.pop(sheetContext),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+                  child: SizedBox(
+                    height: 230,
+                    child: _MemoryPhotoImage(photo: photo),
+                  ),
+                ),
+                if (item.content.trim().isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    item.content,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      height: 1.55,
+                      color: AppTheme.text,
+                    ),
+                  ),
+                ],
+                if (item.relatedProfileFields.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final field in item.relatedProfileFields)
+                        _AlbumInfoPill(
+                          label: '关联信息',
+                          value: _albumFieldLabel(field),
+                        ),
+                    ],
+                  ),
+                ],
+                if (item.familyQuestions.isNotEmpty) ...[
+                  const SizedBox(height: 18),
+                  const _AlbumSectionTitle('可以再问问家里人'),
+                  const SizedBox(height: 8),
+                  for (final question in item.familyQuestions)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        question,
+                        style: const TextStyle(
+                          fontSize: 19,
+                          height: 1.4,
+                          color: AppTheme.textSoft,
+                        ),
+                      ),
+                    ),
+                ],
+              ],
+            );
+          },
+        ),
+      );
+    },
+  );
+}
+
+String _albumFieldLabel(String field) {
+  return switch (field) {
+    'profile_photos' => '照片',
+    'family_members' => '家人',
+    'memory_events' => '往事',
+    'career' => '职业经历',
+    'hobbies' => '兴趣爱好',
+    'food_preference' => '饮食习惯',
+    'personality' => '性格特点',
+    'dialect' => '说话习惯',
+    'daily_life_records' => '日常记录',
+    _ => field,
+  };
 }
 
 class _AlbumQuestionsPanel extends StatelessWidget {
@@ -4226,9 +4438,8 @@ class _TypingPanel extends StatelessWidget {
                     color: AppTheme.text,
                   ),
                   decoration: InputDecoration(
-                    hintText: pendingAttachment == null
-                        ? '输入想说的话'
-                        : '可以补充说明（可选）',
+                    hintText:
+                        pendingAttachment == null ? '输入想说的话' : '可以补充说明（可选）',
                     hintStyle: const TextStyle(
                       fontSize: 22,
                       fontWeight: FontWeight.w400,

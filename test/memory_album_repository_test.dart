@@ -12,6 +12,19 @@ void main() {
     '还可以补',
     '未确认',
     '待补',
+    '有一段和',
+    '平时的生活里',
+    '家人记得',
+    '职业为',
+    '爱好是',
+    '籍贯是',
+    '性格是',
+    '该老人',
+    '此照片展示了',
+    '该图鉴记录了',
+    '我们猜想',
+    '或许',
+    '也许',
   ];
 
   test('buildGenerationInput maps pre-entry rows into album editor input', () {
@@ -90,6 +103,176 @@ void main() {
     expect(requirements['mode'], contains('有声书'));
     expect(requirements['narration_prompt'], contains('边看边听'));
     expect(requirements['narration_prompt'], contains('不要猜测'));
+    expect(requirements['narration_prompt'], contains('少写不补'));
+    expect(requirements['narration_prompt'], contains('不用“也许”“或许”“我们猜想”'));
+  });
+
+  test('storyKeywordsForInput dedupes pre-entry facts before AI generation',
+      () {
+    final input = MemoryAlbumComposer.buildGenerationInput(
+      ownerUserId: 'elder_1',
+      user: {
+        'name': '于小晨',
+        'hometown': '天津津南',
+        'career': '教师',
+        'food_preference': '吃饭是老人的饮食习惯',
+      },
+      familyMembers: [
+        {
+          'id': 1,
+          'name': '小明',
+          'relation': '儿子',
+          'notes': '教师',
+          'is_active': 1,
+        },
+      ],
+      memoryEvents: [
+        {
+          'id': 8,
+          'event_time': '1998',
+          'title': '搬到新家',
+          'description': '一家人在新房门口拍了照片',
+          'location': '天津津南',
+          'people_involved': '小明',
+        },
+      ],
+      dailyLifeRecords: [
+        {
+          'date': '2026-05-28',
+          'breakfast': '吃饭',
+          'activities': '散步',
+        },
+      ],
+      photos: [
+        ProfilePhotoModel(
+          id: 'photo_001',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\photo_001.jpg',
+          category: ProfilePhotoCategory.memory,
+          caption: '一家人在新房门口拍了照片',
+          location: '天津津南',
+          peopleInvolved: '小明',
+        ),
+      ],
+    );
+
+    final keywords = MemoryAlbumComposer.storyKeywordsForInput(input);
+    final values = keywords.map((item) => item['value']).toList();
+
+    expect(values, contains('于小晨'));
+    expect(values, contains('天津津南'));
+    expect(values, contains('教师'));
+    expect(values, contains('搬到新家'));
+    expect(values.where((value) => value == '教师'), hasLength(1));
+    expect(values.where((value) => value == '天津津南'), hasLength(1));
+    expect(values, isNot(contains('吃饭')));
+    expect(values, isNot(contains('吃饭是老人的饮食习惯')));
+  });
+
+  test('dedupePhotosByStoryContent keeps one photo for repeated image story',
+      () {
+    final photos = [
+      ProfilePhotoModel(
+        id: 'photo_a',
+        ownerUserId: 'elder_1',
+        filePath: r'D:\app-data\a.jpg',
+        category: ProfilePhotoCategory.memory,
+        caption: '一家人在新房门口拍了照片',
+        location: '天津津南',
+        peopleInvolved: '小明',
+        createdAt: DateTime(2026, 1, 2),
+      ),
+      ProfilePhotoModel(
+        id: 'photo_b',
+        ownerUserId: 'elder_1',
+        filePath: r'D:\app-data\b.jpg',
+        category: ProfilePhotoCategory.memory,
+        caption: '一家人在新房门口拍了照片',
+        location: '天津津南',
+        peopleInvolved: '小明',
+        isFavorite: true,
+        createdAt: DateTime(2026, 1, 3),
+      ),
+      ProfilePhotoModel(
+        id: 'photo_c',
+        ownerUserId: 'elder_1',
+        filePath: r'D:\app-data\c.jpg',
+        category: ProfilePhotoCategory.daily,
+        caption: '在公园亭子里休息',
+        location: '公园亭子',
+        peopleInvolved: '于小晨',
+      ),
+    ];
+
+    final deduped = MemoryAlbumComposer.dedupePhotosByStoryContent(photos);
+
+    expect(deduped.map((photo) => photo.id), ['photo_b', 'photo_c']);
+  });
+
+  test('compose only creates one photo card for repeated image content', () {
+    final album = MemoryAlbumComposer.compose(
+      ownerUserId: 'elder_1',
+      user: {'name': '于小晨'},
+      familyMembers: const [],
+      memoryEvents: const [],
+      dailyLifeRecords: const [],
+      photos: [
+        ProfilePhotoModel(
+          id: 'photo_a',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\a.jpg',
+          category: ProfilePhotoCategory.memory,
+          caption: '一家人在新房门口拍了照片',
+          location: '天津津南',
+          peopleInvolved: '小明',
+        ),
+        ProfilePhotoModel(
+          id: 'photo_b',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\b.jpg',
+          category: ProfilePhotoCategory.memory,
+          caption: '一家人在新房门口拍了照片',
+          location: '天津津南',
+          peopleInvolved: '小明',
+          isFavorite: true,
+        ),
+      ],
+    );
+
+    final photoItems = album.chapters
+        .expand((chapter) => chapter.items)
+        .where((item) => item.itemType == 'photo_card')
+        .toList();
+
+    expect(photoItems, hasLength(1));
+    expect(photoItems.single.photoId, 'photo_b');
+  });
+
+  test('compose removes repeated concrete story facts across sections', () {
+    final album = MemoryAlbumComposer.compose(
+      ownerUserId: 'elder_1',
+      user: {
+        'name': '于小晨',
+        'hobbies': '听李老师讲课',
+      },
+      familyMembers: const [],
+      memoryEvents: const [],
+      dailyLifeRecords: const [],
+      photos: [
+        ProfilePhotoModel(
+          id: 'photo_lecture',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\lecture.jpg',
+          category: ProfilePhotoCategory.memory,
+          caption: '听李老师讲课',
+        ),
+      ],
+    );
+
+    final narrationText =
+        album.narration.segments.map((segment) => segment.text).join();
+    expect(RegExp('听李老师').allMatches(narrationText), hasLength(1));
+    expect(album.notes.rewrittenParts.join(), contains('重复故事内容'));
   });
 
   test('compose creates chapters, photo cards, timeline and questions', () {
@@ -306,11 +489,109 @@ void main() {
     final familyItem = album.chapters
         .expand((chapter) => chapter.items)
         .singleWhere((item) => item.itemId == 'family_2');
-    expect(familyItem.content, '小红是于小晨的女儿。');
+    expect(familyItem.content, '我们也记得，小红是你的女儿。');
 
     final photoItem = album.chapters
         .expand((chapter) => chapter.items)
         .singleWhere((item) => item.itemId == 'photo_photo_no_info');
     expect(photoItem.content, isEmpty);
+  });
+
+  test('compose filters semantically weak pre-entry values into notes', () {
+    final input = MemoryAlbumComposer.buildGenerationInput(
+      ownerUserId: 'elder_1',
+      user: {
+        'name': '于小晨',
+        'food_preference': '吃饭是老人的饮食习惯',
+        'care_notes': '照看老人',
+      },
+      familyMembers: const [],
+      memoryEvents: const [],
+      dailyLifeRecords: [
+        {
+          'date': '2026-05-28',
+          'breakfast': '吃饭',
+          'activities': '日常活动',
+        },
+      ],
+      photos: [
+        ProfilePhotoModel(
+          id: 'photo_generic',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\photo_generic.jpg',
+          category: ProfilePhotoCategory.other,
+          caption: '这是一张照片',
+        ),
+      ],
+    );
+
+    final daily = input['daily_life_info'] as Map<String, dynamic>;
+    expect(daily['favorite_food'], isEmpty);
+    expect(daily['health_or_care_notes'], isEmpty);
+    final dailyHabits = daily['daily_habits'] as List<dynamic>;
+    expect((dailyHabits.single as Map<String, dynamic>)['breakfast'], isEmpty);
+
+    final warnings = input['input_quality_warnings'] as List<dynamic>;
+    expect(warnings.join(), contains('饮食习惯'));
+    expect(warnings.join(), contains('吃饭是老人的饮食习惯'));
+
+    final album = MemoryAlbumComposer.compose(
+      ownerUserId: 'elder_1',
+      user: {
+        'name': '于小晨',
+        'food_preference': '吃饭是老人的饮食习惯',
+        'care_notes': '照看老人',
+      },
+      familyMembers: const [],
+      memoryEvents: const [],
+      dailyLifeRecords: [
+        {
+          'date': '2026-05-28',
+          'breakfast': '吃饭',
+          'activities': '日常活动',
+        },
+      ],
+      photos: [
+        ProfilePhotoModel(
+          id: 'photo_generic',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\photo_generic.jpg',
+          category: ProfilePhotoCategory.other,
+          caption: '这是一张照片',
+        ),
+      ],
+    );
+
+    final narrationText =
+        album.narration.segments.map((segment) => segment.text).join();
+    expect(narrationText, isNot(contains('吃饭是老人的饮食习惯')));
+    expect(narrationText, isNot(contains('照看老人')));
+    expect(narrationText, isNot(contains('这是一张照片')));
+    expect(album.notes.possibleConflicts.join(), contains('饮食习惯'));
+    expect(album.notes.possibleConflicts.join(), contains('照片'));
+  });
+
+  test('compose keeps concrete details from field-style sentences', () {
+    final album = MemoryAlbumComposer.compose(
+      ownerUserId: 'elder_1',
+      user: {
+        'name': '于小晨',
+        'food_preference': '饮食习惯是爱吃面',
+        'career': '职业经历是教师',
+      },
+      familyMembers: const [],
+      memoryEvents: const [],
+      dailyLifeRecords: const [],
+      photos: const [],
+    );
+
+    final profileItem = album.chapters
+        .expand((chapter) => chapter.items)
+        .singleWhere((item) => item.itemId == 'profile_overview');
+    expect(profileItem.content, contains('爱吃面'));
+    expect(profileItem.content, contains('教师'));
+    expect(profileItem.content, isNot(contains('饮食习惯是')));
+    expect(profileItem.content, isNot(contains('职业经历是')));
+    expect(album.notes.possibleConflicts.join(), isNot(contains('爱吃面')));
   });
 }

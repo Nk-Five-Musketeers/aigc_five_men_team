@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 
 import '../../config/constants.dart';
 import '../../core/api_client.dart';
+import '../../core/prompts/memory_album_prompts.dart';
 import '../models/chat_message.dart';
 import '../models/extracted_relation_hint.dart';
 import '../models/memory_extraction_payload.dart';
@@ -143,7 +144,8 @@ const _photoIntentSystemPrompt = '''
 ''';
 
 class ChatRepository {
-  ChatRepository({ApiClient? apiClient}) : _apiClient = apiClient ?? ApiClient();
+  ChatRepository({ApiClient? apiClient})
+      : _apiClient = apiClient ?? ApiClient();
 
   final ApiClient _apiClient;
 
@@ -222,8 +224,7 @@ class ChatRepository {
     var systemPrompt = _speechPolishSystemPrompt;
     final hint = knownNamesHint.trim();
     if (hint.isNotEmpty) {
-      systemPrompt +=
-          '\n\n【档案中已有的人名/称谓（仅作同音错字对照，禁止编造新的人名）】\n$hint';
+      systemPrompt += '\n\n【档案中已有的人名/称谓（仅作同音错字对照，禁止编造新的人名）】\n$hint';
     }
 
     final response = await _apiClient.dio.post<Map<String, dynamic>>(
@@ -298,8 +299,105 @@ class ChatRepository {
     );
   }
 
+  /// 复用现有 /api/chat 入口批量审核回忆图鉴句子，不新增任何 AI 配置。
+  Future<Map<String, dynamic>> auditMemoryAlbumSentences({
+    required Map<String, dynamic> elderProfile,
+    required List<Map<String, dynamic>> photoInfos,
+    required List<Map<String, dynamic>> sentences,
+    String familyNotes = '',
+    String boundaryNotes = '',
+  }) async {
+    final prompt = MemoryAlbumPrompts.buildBatchSentenceAuditPrompt(
+      elderProfile: elderProfile,
+      photoInfos: photoInfos,
+      sentences: sentences,
+      familyNotes: familyNotes,
+      boundaryNotes: boundaryNotes,
+    );
+    final response = await _postStandaloneChat(
+      chatTask: 'memory_album_sentence_audit',
+      messages: <Map<String, String>>[
+        {'role': 'user', 'content': prompt},
+      ],
+      temperature: 0.08,
+      maxTokens: 2600,
+    );
+
+    final text = _requireAssistantText(response);
+    final decoded = jsonDecode(_stripCodeFence(text));
+    if (decoded is Map) {
+      return Map<String, dynamic>.from(
+        decoded.map((key, value) => MapEntry(key.toString(), value)),
+      );
+    }
+    throw DioException(
+      requestOptions: response.requestOptions,
+      response: response,
+      message: '回忆图鉴句子审核结果不是 JSON 对象',
+    );
+  }
+
+  /// 复用现有 /api/chat 入口：根据预录入关键词生成故事化图鉴正文覆盖层。
+  Future<Map<String, dynamic>> generateMemoryAlbumStoryOverlay({
+    required Map<String, dynamic> generationInput,
+    required Map<String, dynamic> localAlbum,
+    required List<Map<String, String>> keywords,
+  }) async {
+    final prompt = MemoryAlbumPrompts.buildStoryAlbumOverlayPrompt(
+      generationInput: generationInput,
+      localAlbum: localAlbum,
+      keywords: keywords,
+    );
+    final response = await _postStandaloneChat(
+      chatTask: 'memory_album_story_generation',
+      messages: <Map<String, String>>[
+        {'role': 'user', 'content': prompt},
+      ],
+      temperature: 0.36,
+      maxTokens: 3600,
+    );
+
+    final text = _requireAssistantText(response);
+    final decoded = jsonDecode(_stripCodeFence(text));
+    if (decoded is Map) {
+      return Map<String, dynamic>.from(
+        decoded.map((key, value) => MapEntry(key.toString(), value)),
+      );
+    }
+    throw DioException(
+      requestOptions: response.requestOptions,
+      response: response,
+      message: '回忆图鉴故事生成结果不是 JSON 对象',
+    );
+  }
+
+  /// 复用现有 /api/chat 入口润色审核后的段落，不新增任何 AI 配置。
+  Future<String> reviseMemoryAlbumParagraph({
+    required Map<String, dynamic> elderProfile,
+    required String originalParagraph,
+    required List<Map<String, dynamic>> auditResults,
+    required List<String> processedSentences,
+  }) async {
+    final prompt = MemoryAlbumPrompts.buildParagraphRevisionPrompt(
+      elderProfile: elderProfile,
+      originalParagraph: originalParagraph,
+      auditResults: auditResults,
+      processedSentences: processedSentences,
+    );
+    final response = await _postStandaloneChat(
+      chatTask: 'memory_album_paragraph_revision',
+      messages: <Map<String, String>>[
+        {'role': 'user', 'content': prompt},
+      ],
+      temperature: 0.12,
+      maxTokens: 900,
+    );
+    return _requireAssistantText(response).trim();
+  }
+
   /// 上游或代理返回 error 字段时抛出可读异常（避免误判为「结果为空」）。
-  void _throwIfChatResponseError(Map<String, dynamic>? data, Response response) {
+  void _throwIfChatResponseError(
+      Map<String, dynamic>? data, Response response) {
     if (data == null) return;
     final err = data['error'];
     if (err == null) return;
@@ -429,7 +527,9 @@ class ChatRepository {
 
   List<Map<String, String>> _compactHistory(List<ChatMessage> history) {
     final normalMessages = history
-        .where((item) => item.kind == ChatMessageKind.text || item.kind == ChatMessageKind.error)
+        .where((item) =>
+            item.kind == ChatMessageKind.text ||
+            item.kind == ChatMessageKind.error)
         .toList();
     final recent = normalMessages.length > 12
         ? normalMessages.sublist(normalMessages.length - 12)
@@ -599,10 +699,10 @@ class ChatRepository {
         item.map((k, val) => MapEntry(k.toString(), val)),
       );
       final title = (_pickStr(m, const ['title', '标题']) ?? '').trim();
-      final desc = (_pickStr(m, const ['description', '描述', '详细描述']) ?? '').trim();
+      final desc =
+          (_pickStr(m, const ['description', '描述', '详细描述']) ?? '').trim();
       if (title.length < 2 && desc.length < 4) continue;
-      final et =
-          _pickStr(m, const ['event_time', 'eventTime', '事件发生时间']) ?? '';
+      final et = _pickStr(m, const ['event_time', 'eventTime', '事件发生时间']) ?? '';
       final importance = _clampInt(m['importance'], 1, 5, defaultVal: 3);
       final photoPathsRaw = m['photo_paths'] ?? m['photoPaths'];
       final photoPaths = _photoPathsToText(photoPathsRaw);
@@ -634,7 +734,10 @@ class ChatRepository {
     if (raw == null) return '';
     if (raw is String) return raw.trim();
     if (raw is List) {
-      final parts = raw.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
+      final parts = raw
+          .map((e) => e.toString().trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
       return jsonEncode(parts);
     }
     return raw.toString().trim();
@@ -692,7 +795,8 @@ class ChatRepository {
     return defaultVal ? 1 : 0;
   }
 
-  List<ExtractedRelationHint> _peopleHintsFromDecoded(Map<String, dynamic> root) {
+  List<ExtractedRelationHint> _peopleHintsFromDecoded(
+      Map<String, dynamic> root) {
     final list = root['people'] as List<dynamic>? ??
         root['data'] as List<dynamic>? ??
         root['人物列表'] as List<dynamic>?;
@@ -722,9 +826,8 @@ class ChatRepository {
           relation: _pickStr(m, const ['relation', '关系', '称谓']),
           phone: _pickStr(m, const ['phone', '电话', '手机', 'mobile']),
           note: _pickStr(m, const ['note', '备注', '说明']),
-          sameRelationKey: (srk != null && srk.trim().isNotEmpty)
-              ? srk.trim()
-              : null,
+          sameRelationKey:
+              (srk != null && srk.trim().isNotEmpty) ? srk.trim() : null,
         ),
       );
     }

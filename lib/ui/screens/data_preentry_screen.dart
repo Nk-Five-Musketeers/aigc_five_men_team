@@ -240,8 +240,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
 
   Future<void> _loadAll() async {
     setState(() => _loading = true);
-    await LocalDatabase.ensureUserExists(widget.ownerUserId,
-        displayName: '王阿姨');
+    await LocalDatabase.ensureUserExists(widget.ownerUserId);
     final user = await LocalDatabase.getUserById(widget.ownerUserId);
     final nearbyRows =
         await LocalDatabase.getNearbyPeopleForUser(widget.ownerUserId);

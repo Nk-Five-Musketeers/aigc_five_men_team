@@ -705,7 +705,7 @@ class LocalDatabase {
         'users',
         {
           'id': legacyUserId,
-          'name': '王阿姨',
+          'name': '',
           'created_at': now,
         },
         conflictAlgorithm: ConflictAlgorithm.ignore);

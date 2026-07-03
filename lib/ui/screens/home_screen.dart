@@ -29,6 +29,14 @@ enum _AppView { home, memory, recent, preEntry, settings }
 /// 在这个宽度，与一台主流大屏手机的可视宽度接近。
 const double _kAppMaxWidth = 430;
 
+/// 陪伴页顶部时段问候（不含姓名）。
+String _companionPeriodGreeting() {
+  final hour = DateTime.now().hour;
+  if (hour >= 5 && hour < 12) return '上午';
+  if (hour >= 12 && hour < 18) return '下午';
+  return '晚上';
+}
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -614,22 +622,22 @@ class _ChatCompanionCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(2, 4, 2, 12),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(2, 4, 2, 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '王阿姨，上午好',
-                  style: TextStyle(
+                  _companionPeriodGreeting(),
+                  style: const TextStyle(
                     fontSize: 30,
                     height: 1.2,
                     fontWeight: FontWeight.w700,
                     color: AppTheme.text,
                   ),
                 ),
-                SizedBox(height: 4),
-                Text(
+                const SizedBox(height: 4),
+                const Text(
                   '我在这里陪着您，您可以直接和我说话',
                   style: TextStyle(
                     fontSize: 21,

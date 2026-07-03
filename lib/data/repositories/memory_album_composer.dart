@@ -1,89 +1,4 @@
-import 'dart:convert';
-
-import '../../core/narration/narration_text.dart';
-import '../local_db/local_database.dart';
-import '../models/memory_album.dart';
-import '../models/profile_photo.dart';
-import '../models/profile_video.dart';
-
-part 'memory_album_composer.dart';
-
-class MemoryAlbumDraft {
-  const MemoryAlbumDraft({
-    required this.album,
-    required this.photos,
-    required this.generationInput,
-  });
-
-  final MemoryAlbum album;
-  final List<ProfilePhotoModel> photos;
-  final Map<String, dynamic> generationInput;
-
-  Map<String, ProfilePhotoModel> get photosById => {
-        for (final photo in photos) photo.id: photo,
-      };
-}
-
-class MemoryAlbumRepository {
-  Future<MemoryAlbumDraft> buildForUser(String ownerUserId) async {
-    final user = await LocalDatabase.getUserById(ownerUserId);
-    final familyMembers =
-        await LocalDatabase.listFamilyMembersForUser(ownerUserId);
-    final memoryEvents =
-        await LocalDatabase.listMemoryEventsForUser(ownerUserId);
-    final dailyLifeRecords =
-        await LocalDatabase.listDailyLifeRecordsForUser(ownerUserId, limit: 12);
-    final photos = await LocalDatabase.listProfilePhotosForUser(ownerUserId);
-    final videos = await LocalDatabase.listProfileVideosForUser(ownerUserId);
-    final imageOnlyPhotos = photos.where((photo) => !photo.isVideo).toList();
-    final allMedia = [...imageOnlyPhotos, ..._photosFromVideos(videos)];
-
-    final generationInput = MemoryAlbumComposer.buildGenerationInput(
-      ownerUserId: ownerUserId,
-      user: user,
-      familyMembers: familyMembers,
-      memoryEvents: memoryEvents,
-      dailyLifeRecords: dailyLifeRecords,
-      photos: allMedia,
-    );
-    final album = MemoryAlbumComposer.compose(
-      ownerUserId: ownerUserId,
-      user: user,
-      familyMembers: familyMembers,
-      memoryEvents: memoryEvents,
-      dailyLifeRecords: dailyLifeRecords,
-      photos: allMedia,
-    );
-
-    return MemoryAlbumDraft(
-      album: album,
-      photos: allMedia,
-      generationInput: generationInput,
-    );
-  }
-
-  static List<ProfilePhotoModel> _photosFromVideos(
-    List<ProfileVideoModel> videos,
-  ) {
-    return videos
-        .map(
-          (video) => ProfilePhotoModel(
-            id: video.id,
-            ownerUserId: video.ownerUserId,
-            filePath: video.filePath,
-            category: ProfilePhotoCategory.memory,
-            caption: video.caption,
-            metadata: {
-              'source': 'chat',
-              'media_type': 'video',
-              'message_id': video.messageId,
-            },
-            createdAt: video.createdAt,
-          ),
-        )
-        .toList();
-  }
-}
+part of 'memory_album_repository.dart';
 
 class MemoryAlbumComposer {
   MemoryAlbumComposer._();
@@ -632,14 +547,12 @@ content 和 narration_text 必须是可以直接朗读的故事正文，不能�
 
   static ProfilePhotoModel? _pickCoverPhoto(List<ProfilePhotoModel> photos) {
     if (photos.isEmpty) return null;
-    final images = photos.where((photo) => !photo.isVideo).toList();
-    if (images.isEmpty) return photos.first;
     final avatar =
-        images.where((photo) => photo.category == ProfilePhotoCategory.avatar);
+        photos.where((photo) => photo.category == ProfilePhotoCategory.avatar);
     if (avatar.isNotEmpty) return avatar.first;
-    final favorite = images.where((photo) => photo.isFavorite);
+    final favorite = photos.where((photo) => photo.isFavorite);
     if (favorite.isNotEmpty) return favorite.first;
-    return images.first;
+    return photos.first;
   }
 
   static String _albumSubtitle(
@@ -894,7 +807,6 @@ content 和 narration_text 必须是可以直接朗读的故事正文，不能�
   static Map<String, dynamic> _photoInputRow(ProfilePhotoModel photo) => {
         'photo_id': photo.id,
         'category': _photoCategoryLabel(photo.category),
-        'media_type': photo.isVideo ? 'video' : 'image',
         'visible_content': _photoVisibleContent(photo),
         'people': _text(photo.peopleInvolved),
         'scene': _text(photo.location),
@@ -909,10 +821,7 @@ content 和 narration_text 必须是可以直接朗读的故事正文，不能�
 
   static String _photoVisibleContent(ProfilePhotoModel photo) {
     final caption = _text(photo.caption);
-    if (caption.isNotEmpty) {
-      return photo.isVideo ? '视频：$caption' : caption;
-    }
-    if (photo.isVideo) return '一段家庭视频';
+    if (caption.isNotEmpty) return caption;
     return [
       _text(photo.photoTime),
       _text(photo.location),

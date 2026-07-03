@@ -1,7 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:aigc_five_men_team/logic/prompt_task_router.dart';
-import 'package:aigc_five_men_team/data/models/chat_message.dart';
 
 /// PromptTaskRouter 纯逻辑单元测试。
 ///

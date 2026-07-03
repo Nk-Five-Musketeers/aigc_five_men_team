@@ -54,9 +54,9 @@ class VoiceInputService {
     if (!_speech.isAvailable) return;
     try {
       _cachedLocales ??= await _speech.locales().timeout(
-        const Duration(seconds: 2),
-        onTimeout: () => <LocaleName>[],
-      );
+            const Duration(seconds: 2),
+            onTimeout: () => <LocaleName>[],
+          );
     } catch (_) {
       _cachedLocales = _cachedLocales ?? <LocaleName>[];
     }
@@ -176,7 +176,8 @@ class VoiceInputService {
       _finishSession();
       return;
     }
-    debugPrint('[VoiceInput] ignore spurious done while listening (single session)');
+    debugPrint(
+        '[VoiceInput] ignore spurious done while listening (single session)');
   }
 
   static void _onResult(SpeechRecognitionResult result) {
@@ -208,8 +209,7 @@ class VoiceInputService {
         )
         .timeout(
           initTimeout,
-          onTimeout: () =>
-              throw TimeoutException('语音识别初始化超时', initTimeout),
+          onTimeout: () => throw TimeoutException('语音识别初始化超时', initTimeout),
         );
 
     if (ok != true) {
@@ -343,13 +343,12 @@ class VoiceInputService {
     try {
       await _speech.listen(
         onResult: _onResult,
-        localeId: localeId,
-        listenFor: listenForMax,
-        pauseFor: null,
         listenOptions: SpeechListenOptions(
           cancelOnError: true,
           partialResults: true,
           listenMode: ListenMode.dictation,
+          listenFor: listenForMax,
+          localeId: localeId,
         ),
       );
     } on ListenFailedException catch (e) {

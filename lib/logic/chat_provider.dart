@@ -857,7 +857,7 @@ class ChatProvider extends ChangeNotifier {
     try {
       await LocalDatabase.insertUser({
         'id': defaultUserId,
-        'name': '王阿姨',
+        'name': '',
         'created_at': DateTime.now().toIso8601String(),
       });
       _activeConversationId =

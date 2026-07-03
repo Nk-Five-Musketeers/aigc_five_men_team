@@ -1,29 +1,14 @@
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
-import 'package:file_selector/file_selector.dart';
-import 'package:path/path.dart' as p;
-
-import '../../config/theme.dart';
-import '../../core/services/profile_photo_storage.dart';
-import '../../data/local_db/local_database.dart';
-import '../../data/models/nearby_person.dart';
-import '../../data/models/profile_photo.dart';
-import '../../data/models/profile_video.dart';
+part of '../data_preentry_screen.dart';
 
 class DataPreentryScreen extends StatefulWidget {
   const DataPreentryScreen({
     super.key,
     required this.ownerUserId,
     required this.onBack,
-    this.onDataChanged,
   });
 
   final String ownerUserId;
   final VoidCallback onBack;
-  final VoidCallback? onDataChanged;
 
   @override
   State<DataPreentryScreen> createState() => _DataPreentryScreenState();
@@ -81,7 +66,6 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
   List<Map<String, dynamic>> _familyMembers = [];
   List<Map<String, dynamic>> _memoryEvents = [];
   List<ProfilePhotoModel> _photos = [];
-  List<ProfileVideoModel> _videos = [];
 
   @override
   void initState() {
@@ -137,110 +121,10 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
     super.dispose();
   }
 
-  Future<void> _afterDataChanged() async {
-    await _loadAll();
-    widget.onDataChanged?.call();
-  }
-
-  Future<bool> _confirmDelete({
-    required String title,
-    required String message,
-  }) async {
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
-    return result ?? false;
-  }
-
-  Future<void> _deleteNearbyPerson(NearbyPersonModel person) async {
-    final name = person.name?.trim().isNotEmpty == true
-        ? person.name!.trim()
-        : '该亲属候选';
-    final ok = await _confirmDelete(
-      title: '删除亲属候选',
-      message: '确定删除「$name」吗？若已确认入亲属表，对应家庭成员记录也会一并删除。',
-    );
-    if (!ok) return;
-    await LocalDatabase.removeNearbyPerson(person.id);
-    await _afterDataChanged();
-    _toast('已删除');
-  }
-
-  Future<void> _deleteFamilyMember(Map<String, dynamic> row) async {
-    final relation = _string(row['relation']);
-    final name = _string(row['name']);
-    final label = relation.isEmpty && name.isEmpty
-        ? '该家庭成员'
-        : '${relation.isEmpty ? '亲属' : relation} · ${name.isEmpty ? '未命名' : name}';
-    final ok = await _confirmDelete(
-      title: '删除家庭成员',
-      message: '确定删除「$label」吗？删除后无法恢复。',
-    );
-    if (!ok) return;
-    await LocalDatabase.deleteFamilyMember((row['id'] as num).toInt());
-    await _afterDataChanged();
-    _toast('家庭成员已删除');
-  }
-
-  Future<void> _deleteMemoryEvent(Map<String, dynamic> row) async {
-    final title = _string(row['title']).isEmpty
-        ? '未命名经历'
-        : _string(row['title']);
-    final ok = await _confirmDelete(
-      title: '删除重要经历',
-      message: '确定删除「$title」吗？删除后无法恢复。',
-    );
-    if (!ok) return;
-    await LocalDatabase.deleteMemoryEvent((row['id'] as num).toInt());
-    await _afterDataChanged();
-    _toast('重要经历已删除');
-  }
-
-  Future<void> _deletePhoto(ProfilePhotoModel photo) async {
-    final title = photo.caption?.trim().isNotEmpty == true
-        ? photo.caption!.trim()
-        : _photoCategoryLabel(photo.category);
-    final ok = await _confirmDelete(
-      title: '删除照片',
-      message: '确定删除「$title」吗？数据库记录和本地文件都会删除。',
-    );
-    if (!ok) return;
-    await LocalDatabase.deleteProfilePhoto(photo.id);
-    await _afterDataChanged();
-    _toast('照片已删除');
-  }
-
-  Future<void> _deleteVideo(ProfileVideoModel video) async {
-    final title = video.caption?.trim().isNotEmpty == true
-        ? video.caption!.trim()
-        : '家庭视频';
-    final ok = await _confirmDelete(
-      title: '删除视频',
-      message: '确定删除「$title」吗？数据库记录和本地文件都会删除。',
-    );
-    if (!ok) return;
-    await LocalDatabase.deleteProfileVideo(video.id);
-    await _afterDataChanged();
-    _toast('视频已删除');
-  }
-
   Future<void> _loadAll() async {
     setState(() => _loading = true);
-    await LocalDatabase.ensureUserExists(widget.ownerUserId);
+    await LocalDatabase.ensureUserExists(widget.ownerUserId,
+        displayName: '王阿姨');
     final user = await LocalDatabase.getUserById(widget.ownerUserId);
     final nearbyRows =
         await LocalDatabase.getNearbyPeopleForUser(widget.ownerUserId);
@@ -248,13 +132,8 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
         await LocalDatabase.listFamilyMembersForUser(widget.ownerUserId);
     final events =
         await LocalDatabase.listMemoryEventsForUser(widget.ownerUserId);
-    final photos = (await LocalDatabase.listProfilePhotosForUser(
-      widget.ownerUserId,
-    ))
-        .where((p) => !p.isVideo)
-        .toList();
-    final videos =
-        await LocalDatabase.listProfileVideosForUser(widget.ownerUserId);
+    final photos =
+        await LocalDatabase.listProfilePhotosForUser(widget.ownerUserId);
 
     if (user != null) {
       _name.text = _string(user['name']);
@@ -279,7 +158,6 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
       _familyMembers = families;
       _memoryEvents = events;
       _photos = photos;
-      _videos = videos;
       _loading = false;
     });
   }
@@ -303,7 +181,6 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
       'medical_notes': _text(_medicalNotes),
     });
     _toast('老人信息已保存');
-    await _afterDataChanged();
   }
 
   Future<void> _saveNearbyPerson() async {
@@ -326,13 +203,13 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
       'is_active': _personActive ? 1 : 0,
     });
     _clearPersonForm();
-    await _afterDataChanged();
+    await _loadAll();
     _toast('亲属候选已保存');
   }
 
   Future<void> _confirmNearby(String id) async {
     final familyId = await LocalDatabase.confirmNearbyPersonAsFamilyMember(id);
-    await _afterDataChanged();
+    await _loadAll();
     _toast(familyId == null ? '未找到候选记录' : '已确认入亲属表');
   }
 
@@ -356,7 +233,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
       'verified': 1,
     });
     _clearEventForm();
-    await _afterDataChanged();
+    await _loadAll();
     _toast('重要经历已保存');
   }
 
@@ -406,7 +283,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
     await LocalDatabase.insertProfilePhoto(photo);
     await _syncPhotoToExistingTables(photo);
     _clearPhotoForm();
-    await _afterDataChanged();
+    await _loadAll();
     _toast('照片已保存');
   }
 
@@ -663,29 +540,8 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
             onChanged: (value) => setState(() => _personActive = value),
           ),
           const SizedBox(height: 8),
-          _Subhead(label: '已确认亲属'),
-          if (_familyMembers.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                '暂无已确认亲属。保存候选后点「确认入亲属表」。',
-                style: TextStyle(color: AppTheme.textSoft, fontSize: 18),
-              ),
-            )
-          else
-            ..._familyMembers.map(_familyTile),
-          const SizedBox(height: 8),
           _Subhead(label: '候选列表'),
-          if (_nearbyPeople.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                '暂无候选记录。',
-                style: TextStyle(color: AppTheme.textSoft, fontSize: 18),
-              ),
-            )
-          else
-            ..._nearbyPeople.map(_nearbyTile),
+          ..._nearbyPeople.map(_nearbyTile),
         ],
       ),
     );
@@ -728,16 +584,7 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
           ),
           const SizedBox(height: 8),
           _Subhead(label: '已保存经历'),
-          if (_memoryEvents.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                '暂无已保存经历。',
-                style: TextStyle(color: AppTheme.textSoft, fontSize: 18),
-              ),
-            )
-          else
-            ..._memoryEvents.map(_memoryTile),
+          ..._memoryEvents.take(6).map(_memoryTile),
         ],
       ),
     );
@@ -838,53 +685,8 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
           ),
           const SizedBox(height: 8),
           _Subhead(label: '照片库'),
-          if (_photos.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                '暂无照片。',
-                style: TextStyle(color: AppTheme.textSoft, fontSize: 18),
-              ),
-            )
-          else
-            ..._photos.map(_photoTile),
-          const SizedBox(height: 16),
-          const _Subhead(label: '视频库'),
-          if (_videos.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                '暂无视频。可在陪伴页用「+」上传。',
-                style: TextStyle(color: AppTheme.textSoft, fontSize: 18),
-              ),
-            )
-          else
-            ..._videos.map(_videoTile),
+          ..._photos.take(8).map(_photoTile),
         ],
-      ),
-    );
-  }
-
-  Widget _familyTile(Map<String, dynamic> row) {
-    final relation = _string(row['relation']);
-    final name = _string(row['name']);
-    final title = relation.isEmpty && name.isEmpty
-        ? '未命名亲属'
-        : '${relation.isEmpty ? '亲属' : relation} · ${name.isEmpty ? '未命名' : name}';
-    final isActive = (row['is_active'] as int?) != 0;
-    return _ListTileShell(
-      title: title,
-      subtitle: [
-        _string(row['birthday']),
-        _string(row['location']),
-        _string(row['contact_freq']),
-        _string(row['notes']),
-        if (!isActive) '已标记为不再联系',
-      ].where((e) => e.trim().isNotEmpty).join('；'),
-      trailing: IconButton(
-        tooltip: '删除',
-        onPressed: () => _deleteFamilyMember(row),
-        icon: const Icon(Icons.delete_outline_rounded),
       ),
     );
   }
@@ -915,7 +717,10 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
           ),
           IconButton(
             tooltip: '删除',
-            onPressed: () => _deleteNearbyPerson(person),
+            onPressed: () async {
+              await LocalDatabase.removeNearbyPerson(person.id);
+              await _loadAll();
+            },
             icon: const Icon(Icons.delete_outline_rounded),
           ),
         ],
@@ -932,7 +737,10 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
       subtitle: _string(row['description']),
       trailing: IconButton(
         tooltip: '删除',
-        onPressed: () => _deleteMemoryEvent(row),
+        onPressed: () async {
+          await LocalDatabase.deleteMemoryEvent((row['id'] as num).toInt());
+          await _loadAll();
+        },
         icon: const Icon(Icons.delete_outline_rounded),
       ),
     );
@@ -961,39 +769,24 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
                 photo.id,
                 !photo.isFavorite,
               );
-              await _afterDataChanged();
+              await _loadAll();
             },
             icon: Icon(
-              photo.isFavorite ? Icons.star_rounded : Icons.star_outline_rounded,
+              photo.isFavorite
+                  ? Icons.star_rounded
+                  : Icons.star_outline_rounded,
               color: photo.isFavorite ? AppTheme.accent : null,
             ),
           ),
           IconButton(
             tooltip: '删除',
-            onPressed: () => _deletePhoto(photo),
+            onPressed: () async {
+              await LocalDatabase.deleteProfilePhoto(photo.id);
+              await _loadAll();
+            },
             icon: const Icon(Icons.delete_outline_rounded),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _videoTile(ProfileVideoModel video) {
-    final title = video.caption?.trim().isNotEmpty == true
-        ? video.caption!
-        : '家庭视频';
-    return _ListTileShell(
-      leading: const Icon(Icons.videocam_rounded, color: AppTheme.primaryDeep),
-      title: title,
-      subtitle: [
-        video.videoTime,
-        video.location,
-        video.peopleInvolved,
-      ].where((e) => e != null && e.trim().isNotEmpty).join('；'),
-      trailing: IconButton(
-        tooltip: '删除',
-        onPressed: () => _deleteVideo(video),
-        icon: const Icon(Icons.delete_outline_rounded),
       ),
     );
   }
@@ -1043,383 +836,5 @@ class _DataPreentryScreenState extends State<DataPreentryScreen> {
       ProfilePhotoCategory.daily => '日常照片',
       ProfilePhotoCategory.other => '其他',
     };
-  }
-}
-
-class _StepItem {
-  _StepItem(this.icon, this.label);
-
-  final IconData icon;
-  final String label;
-}
-
-class _StepPicker extends StatelessWidget {
-  const _StepPicker({
-    required this.items,
-    required this.current,
-    required this.onChanged,
-  });
-
-  final List<_StepItem> items;
-  final int current;
-  final ValueChanged<int> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        for (var i = 0; i < items.length; i++) ...[
-          Expanded(
-            child: _StepButton(
-              index: i + 1,
-              label: items[i].label,
-              active: current == i,
-              done: current > i,
-              onTap: () => onChanged(i),
-            ),
-          ),
-          if (i != items.length - 1) const SizedBox(width: 8),
-        ],
-      ],
-    );
-  }
-}
-
-class _StepButton extends StatelessWidget {
-  const _StepButton({
-    required this.index,
-    required this.label,
-    required this.active,
-    required this.done,
-    required this.onTap,
-  });
-
-  final int index;
-  final String label;
-  final bool active;
-  final bool done;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final Color bg;
-    final Color fg;
-    final Color borderColor;
-    if (active) {
-      bg = AppTheme.primary;
-      fg = Colors.white;
-      borderColor = AppTheme.primary;
-    } else if (done) {
-      bg = AppTheme.surface2;
-      fg = AppTheme.primaryDeep;
-      borderColor = AppTheme.surface2;
-    } else {
-      bg = AppTheme.surface1;
-      fg = AppTheme.textSoft;
-      borderColor = AppTheme.borderHairline;
-    }
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
-        onTap: onTap,
-        child: Container(
-          height: 60,
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          decoration: BoxDecoration(
-            color: bg,
-            borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
-            border: Border.all(color: borderColor, width: 1),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 28,
-                height: 28,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: active ? Colors.white24 : Colors.transparent,
-                  border: Border.all(color: fg, width: 1.4),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(
-                  '$index',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                    color: fg,
-                    height: 1,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  label,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                    color: fg,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _Panel extends StatelessWidget {
-  const _Panel({
-    super.key,
-    required this.icon,
-    required this.title,
-    required this.child,
-    this.trailing,
-  });
-
-  final IconData icon;
-  final String title;
-  final Widget child;
-  final Widget? trailing;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppTheme.surface1,
-        borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
-        border: Border.all(color: AppTheme.borderHairline, width: 1),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 16, 14, 14),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.text,
-                      height: 1.2,
-                    ),
-                  ),
-                ),
-                if (trailing != null) trailing!,
-              ],
-            ),
-          ),
-          const Divider(
-            height: 1,
-            thickness: 1,
-            color: AppTheme.borderHairline,
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-            child: child,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Input extends StatelessWidget {
-  const _Input({
-    required this.label,
-    required this.controller,
-    this.maxLines = 1,
-  });
-
-  final String label;
-  final TextEditingController controller;
-  final int maxLines;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextField(
-        controller: controller,
-        minLines: 1,
-        maxLines: maxLines,
-        style: const TextStyle(
-          fontSize: 19,
-          fontWeight: FontWeight.w500,
-          color: AppTheme.text,
-        ),
-        decoration: _inputDecoration(label),
-      ),
-    );
-  }
-}
-
-InputDecoration _inputDecoration(String label) {
-  return InputDecoration(
-    labelText: label,
-    filled: true,
-    fillColor: AppTheme.surface1,
-    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-    labelStyle: const TextStyle(
-      fontSize: 17,
-      fontWeight: FontWeight.w500,
-      color: AppTheme.textSoft,
-    ),
-    floatingLabelStyle: const TextStyle(
-      fontSize: 15,
-      fontWeight: FontWeight.w600,
-      color: AppTheme.primaryDeep,
-    ),
-    border: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
-      borderSide: const BorderSide(color: AppTheme.borderHairline, width: 1),
-    ),
-    enabledBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
-      borderSide: const BorderSide(color: AppTheme.borderHairline, width: 1),
-    ),
-    focusedBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
-      borderSide:
-          const BorderSide(color: AppTheme.primaryDeep, width: 1.6),
-    ),
-  );
-}
-
-class _Subhead extends StatelessWidget {
-  const _Subhead({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Padding(
-        padding: const EdgeInsets.only(top: 4, bottom: 10),
-        child: Text(
-          label,
-          style: const TextStyle(
-            color: AppTheme.text,
-            fontSize: 19,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.2,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ListTileShell extends StatelessWidget {
-  const _ListTileShell({
-    required this.title,
-    required this.subtitle,
-    required this.trailing,
-    this.leading,
-  });
-
-  final String title;
-  final String subtitle;
-  final Widget trailing;
-  final Widget? leading;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppTheme.surface1,
-        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
-        border: Border.all(color: AppTheme.borderHairline, width: 1),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (leading != null) ...[
-            leading!,
-            const SizedBox(width: 12),
-          ],
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    color: AppTheme.text,
-                    fontSize: 19,
-                    fontWeight: FontWeight.w700,
-                    height: 1.25,
-                  ),
-                ),
-                if (subtitle.trim().isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Text(
-                      subtitle,
-                      style: const TextStyle(
-                        fontSize: 17,
-                        height: 1.4,
-                        fontWeight: FontWeight.w400,
-                        color: AppTheme.textSoft,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          trailing,
-        ],
-      ),
-    );
-  }
-}
-
-class _BackLine extends StatelessWidget {
-  const _BackLine({required this.title, required this.onBack});
-
-  final String title;
-  final VoidCallback onBack;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Row(
-        children: [
-          IconButton(
-            tooltip: '返回',
-            onPressed: onBack,
-            iconSize: 26,
-            style: IconButton.styleFrom(
-              foregroundColor: AppTheme.primaryDeep,
-            ),
-            icon: const Icon(Icons.arrow_back_rounded),
-          ),
-          const SizedBox(width: 4),
-          Expanded(
-            child: Text(
-              title,
-              style: const TextStyle(
-                fontSize: 26,
-                fontWeight: FontWeight.w700,
-                color: AppTheme.text,
-                height: 1.2,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 }

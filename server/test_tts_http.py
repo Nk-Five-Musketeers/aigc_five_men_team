@@ -32,7 +32,7 @@ class TTSHttpTest(unittest.TestCase):
         req = parse_tts_request({"text": " 您好 "})
 
         self.assertEqual(req.text, "您好")
-        self.assertEqual(req.voice, "yunye")
+        self.assertEqual(req.voice, "wanqing")
         self.assertEqual(req.speed, 50)
         self.assertEqual(req.volume, 50)
 
@@ -65,7 +65,7 @@ class TTSHttpTest(unittest.TestCase):
             [
                 {
                     "text": "您好",
-                    "voice": "yunye",
+                    "voice": "wanqing",
                     "speed": 42,
                     "volume": 63,
                 }

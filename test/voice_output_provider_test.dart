@@ -90,7 +90,8 @@ class _FakeSettingsStore implements VoiceOutputSettingsStore {
 }
 
 void main() {
-  test('uses yunye and persisted speed volume when reading a reply', () async {
+  test('uses wanqing and persisted speed volume when reading a reply',
+      () async {
     final synthesizer = _FakeSynthesizer();
     final player = _FakePlayer();
     final provider = VoiceOutputProvider(
@@ -104,7 +105,7 @@ void main() {
 
     expect(provider.playingMessageId, 'reply-1');
     expect(synthesizer.calls, hasLength(1));
-    expect(synthesizer.calls.single.voice, 'yunye');
+    expect(synthesizer.calls.single.voice, 'wanqing');
     expect(synthesizer.calls.single.speed, 42);
     expect(synthesizer.calls.single.volume, 63);
     provider.dispose();

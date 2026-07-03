@@ -8,7 +8,7 @@ import '../../config/constants.dart';
 abstract class TtsSynthesizer {
   Future<Uint8List> synthesize({
     required String text,
-    String voice = 'yunye',
+    String voice = 'wanqing',
     int speed = 50,
     int volume = 50,
   });
@@ -43,7 +43,7 @@ class TtsRepository implements TtsSynthesizer {
   @override
   Future<Uint8List> synthesize({
     required String text,
-    String voice = 'yunye',
+    String voice = 'wanqing',
     int speed = 50,
     int volume = 50,
   }) async {

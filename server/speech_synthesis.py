@@ -14,7 +14,7 @@ TTS_URL = "wss://api-ai.vivo.com.cn/tts"
 DEFAULT_APP_ID = "2026594139"
 DEFAULT_ENGINE_ID = "short_audio_synthesis_jovi"
 DEFAULT_USER_ID = "2addc42b7ae689dfdf1c63e220df52a2"
-DEFAULT_VOICE = "yunye"
+DEFAULT_VOICE = "wanqing"
 MAX_TEXT_BYTES = 2048
 _SENTENCE_BOUNDARIES = frozenset("。！？；…．.!?\n，,、：:")
 

@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import '../../core/memory_album/memory_album_story_pages.dart';
 import '../../core/narration/narration_text.dart';
 import '../local_db/local_database.dart';
 import '../models/memory_album.dart';
@@ -274,10 +275,10 @@ content 和 narration_text 必须是可以直接朗读的故事正文，不能�
     final album = MemoryAlbum(
       albumId: 'album_$ownerUserId',
       albumTitle: '$elderName的回忆图鉴',
-      albumSubtitle: _albumSubtitle(user, familyMembers, memoryEvents, photos),
+      albumSubtitle: memoryAlbumSubtitle,
       cover: AlbumCover(
         title: elderName,
-        subtitle: _coverSubtitle(user),
+        subtitle: memoryAlbumSubtitle,
         coverText: _coverText(elderName, coverPhoto, photos),
         recommendedCoverPhotoId: coverPhoto?.id ?? '',
       ),
@@ -632,38 +633,21 @@ content 和 narration_text 必须是可以直接朗读的故事正文，不能�
     if (photos.isEmpty) return null;
     final images = photos.where((photo) => !photo.isVideo).toList();
     if (images.isEmpty) return photos.first;
+    final favorite = images.where(
+      (photo) =>
+          photo.isFavorite && photo.category != ProfilePhotoCategory.avatar,
+    );
+    if (favorite.isNotEmpty) return favorite.first;
+    final family =
+        images.where((photo) => photo.category == ProfilePhotoCategory.family);
+    if (family.isNotEmpty) return family.first;
+    final storyPhotos =
+        images.where((photo) => photo.category != ProfilePhotoCategory.avatar);
+    if (storyPhotos.isNotEmpty) return storyPhotos.first;
     final avatar =
         images.where((photo) => photo.category == ProfilePhotoCategory.avatar);
     if (avatar.isNotEmpty) return avatar.first;
-    final favorite = images.where((photo) => photo.isFavorite);
-    if (favorite.isNotEmpty) return favorite.first;
     return images.first;
-  }
-
-  static String _albumSubtitle(
-    Map<String, dynamic>? user,
-    List<Map<String, dynamic>> familyMembers,
-    List<Map<String, dynamic>> memoryEvents,
-    List<ProfilePhotoModel> photos,
-  ) {
-    final parts = <String>[];
-    final hometown = _text(user?['hometown']);
-    if (hometown.isNotEmpty) parts.add(hometown);
-    if (memoryEvents.isNotEmpty) parts.add('${memoryEvents.length}段经历');
-    if (familyMembers.isNotEmpty) parts.add('${familyMembers.length}位亲友');
-    if (photos.isNotEmpty) parts.add('${photos.length}张照片');
-    return parts.isEmpty ? '慢慢翻看的回忆册' : parts.join(' · ');
-  }
-
-  static String _coverSubtitle(Map<String, dynamic>? user) {
-    final birth = _text(user?['birth_year']);
-    final hometown = _text(user?['hometown']);
-    if (birth.isNotEmpty && hometown.isNotEmpty) {
-      return '$birth · $hometown';
-    }
-    if (hometown.isNotEmpty) return hometown;
-    if (birth.isNotEmpty) return birth;
-    return '一本慢慢翻看的回忆册';
   }
 
   static String _coverText(

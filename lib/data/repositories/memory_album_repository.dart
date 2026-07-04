@@ -7,8 +7,6 @@ import '../models/memory_album.dart';
 import '../models/profile_photo.dart';
 import '../models/profile_video.dart';
 
-part 'memory_album_composer.dart';
-
 class MemoryAlbumDraft {
   const MemoryAlbumDraft({
     required this.album,

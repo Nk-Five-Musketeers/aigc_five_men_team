@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -8,6 +9,92 @@ import '../models/chat_message.dart';
 import '../models/extracted_relation_hint.dart';
 import '../models/memory_extraction_payload.dart';
 import '../models/photo_intent_plan.dart';
+
+Stream<String> assistantTextDeltasFromSse(
+  Stream<List<int>> byteStream,
+) async* {
+  await for (final line
+      in byteStream.transform(utf8.decoder).transform(const LineSplitter())) {
+    final trimmedLeft = line.trimLeft();
+    if (!trimmedLeft.startsWith('data:')) continue;
+    final dataText = trimmedLeft.substring(5).trimLeft();
+    if (dataText.isEmpty) continue;
+    if (dataText.trim() == '[DONE]') break;
+
+    dynamic decoded;
+    try {
+      decoded = jsonDecode(dataText);
+    } catch (_) {
+      continue;
+    }
+    if (decoded is! Map) continue;
+    final delta = _extractAssistantDelta(
+      Map<String, dynamic>.from(
+        decoded.map((k, v) => MapEntry(k.toString(), v)),
+      ),
+    );
+    if (delta != null && delta.isNotEmpty) {
+      yield delta;
+    }
+  }
+}
+
+String? _extractAssistantDelta(Map<String, dynamic> data) {
+  final nested = data['data'];
+  if (nested is Map) {
+    final inner = Map<String, dynamic>.from(
+      nested.map((k, v) => MapEntry(k.toString(), v)),
+    );
+    final t = _extractAssistantDelta(inner);
+    if (t != null && t.isNotEmpty) return t;
+  }
+
+  final choices = data['choices'];
+  if (choices is! List || choices.isEmpty) return null;
+  final first = choices.first;
+  if (first is! Map) return null;
+  final choice = Map<String, dynamic>.from(
+    first.map((k, v) => MapEntry(k.toString(), v)),
+  );
+
+  final delta = choice['delta'];
+  if (delta is Map) {
+    final d = Map<String, dynamic>.from(
+      delta.map((k, v) => MapEntry(k.toString(), v)),
+    );
+    return _messageContentToString(d['content']);
+  }
+
+  final message = choice['message'];
+  if (message is Map) {
+    final m = Map<String, dynamic>.from(
+      message.map((k, v) => MapEntry(k.toString(), v)),
+    );
+    return _messageContentToString(m['content']);
+  }
+  return _messageContentToString(choice['text']);
+}
+
+String? _messageContentToString(Object? content) {
+  if (content == null) return null;
+  if (content is String) return content;
+  if (content is List) {
+    final buf = StringBuffer();
+    for (final part in content) {
+      if (part is String) {
+        buf.write(part);
+      } else if (part is Map) {
+        final m = Map<String, dynamic>.from(
+          part.map((k, v) => MapEntry(k.toString(), v)),
+        );
+        final text = m['text'];
+        if (text is String) buf.write(text);
+      }
+    }
+    return buf.toString();
+  }
+  return null;
+}
 
 const _fullMemoryExtractSystemPrompt = '''
 你是结构化信息抽取模块。用户消息中只会提供**老人本人的发言文本**（不含陪伴助手/拾忆的回复）。请仅根据这些发言、已有周围人摘要、已有老人档案摘要抽取可写入本地数据库的结构化信息；**禁止**把助手说过的人名、经历、电话等当作事实写入 JSON。
@@ -143,7 +230,8 @@ const _photoIntentSystemPrompt = '''
 ''';
 
 class ChatRepository {
-  ChatRepository({ApiClient? apiClient}) : _apiClient = apiClient ?? ApiClient();
+  ChatRepository({ApiClient? apiClient})
+      : _apiClient = apiClient ?? ApiClient();
 
   final ApiClient _apiClient;
 
@@ -185,6 +273,67 @@ class ChatRepository {
     );
   }
 
+  /// Main chat reply as OpenAI-style SSE text deltas.
+  Stream<String> streamMessage({
+    required List<ChatMessage> history,
+    required Map<String, dynamic> promptContext,
+  }) async* {
+    final messages = _compactHistory(history);
+
+    final response = await _apiClient.dio.post<ResponseBody>(
+      '/api/chat',
+      data: <String, dynamic>{
+        'model': AppConstants.modelId,
+        'messages': messages,
+        'prompt_context': promptContext,
+        'temperature': 0.65,
+        'top_p': 0.75,
+        'max_tokens': 700,
+        'reasoning_effort': 'minimal',
+        'enable_thinking': false,
+        'stream': true,
+      },
+      options: Options(
+        responseType: ResponseType.stream,
+        validateStatus: (status) => status != null && status < 600,
+      ),
+    );
+
+    final status = response.statusCode ?? 0;
+    final body = response.data;
+    if (status < 200 || status >= 300 || body == null) {
+      final detail = body == null
+          ? ''
+          : await _decodeStreamError(body.stream.cast<List<int>>());
+      throw DioException(
+        requestOptions: response.requestOptions,
+        response: response,
+        message: detail.isNotEmpty ? detail : '妯″瀷娴佸紡杩斿洖澶辫触 (HTTP $status)',
+      );
+    }
+
+    yield* assistantTextDeltasFromSse(body.stream.cast<List<int>>());
+  }
+
+  Future<String> _decodeStreamError(Stream<List<int>> stream) async {
+    final bytes = <int>[];
+    await for (final chunk in stream) {
+      bytes.addAll(chunk);
+    }
+    if (bytes.isEmpty) return '';
+    final raw = utf8.decode(bytes, allowMalformed: true);
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        final detail = decoded['detail']?.toString();
+        final error = decoded['error']?.toString();
+        if (detail != null && detail.isNotEmpty) return detail;
+        if (error != null && error.isNotEmpty) return error;
+      }
+    } catch (_) {}
+    return raw.trim();
+  }
+
   /// 本地 NLP 润色（`server/nlp_speech_polish.py`，无需 AppKey）。
   Future<String> polishSpeechTranscriptLocal(String rawTranscript) async {
     final raw = rawTranscript.trim();
@@ -222,8 +371,7 @@ class ChatRepository {
     var systemPrompt = _speechPolishSystemPrompt;
     final hint = knownNamesHint.trim();
     if (hint.isNotEmpty) {
-      systemPrompt +=
-          '\n\n【档案中已有的人名/称谓（仅作同音错字对照，禁止编造新的人名）】\n$hint';
+      systemPrompt += '\n\n【档案中已有的人名/称谓（仅作同音错字对照，禁止编造新的人名）】\n$hint';
     }
 
     final response = await _apiClient.dio.post<Map<String, dynamic>>(
@@ -299,7 +447,8 @@ class ChatRepository {
   }
 
   /// 上游或代理返回 error 字段时抛出可读异常（避免误判为「结果为空」）。
-  void _throwIfChatResponseError(Map<String, dynamic>? data, Response response) {
+  void _throwIfChatResponseError(
+      Map<String, dynamic>? data, Response response) {
     if (data == null) return;
     final err = data['error'];
     if (err == null) return;
@@ -429,7 +578,9 @@ class ChatRepository {
 
   List<Map<String, String>> _compactHistory(List<ChatMessage> history) {
     final normalMessages = history
-        .where((item) => item.kind == ChatMessageKind.text || item.kind == ChatMessageKind.error)
+        .where((item) =>
+            item.kind == ChatMessageKind.text ||
+            item.kind == ChatMessageKind.error)
         .toList();
     final recent = normalMessages.length > 12
         ? normalMessages.sublist(normalMessages.length - 12)
@@ -599,10 +750,10 @@ class ChatRepository {
         item.map((k, val) => MapEntry(k.toString(), val)),
       );
       final title = (_pickStr(m, const ['title', '标题']) ?? '').trim();
-      final desc = (_pickStr(m, const ['description', '描述', '详细描述']) ?? '').trim();
+      final desc =
+          (_pickStr(m, const ['description', '描述', '详细描述']) ?? '').trim();
       if (title.length < 2 && desc.length < 4) continue;
-      final et =
-          _pickStr(m, const ['event_time', 'eventTime', '事件发生时间']) ?? '';
+      final et = _pickStr(m, const ['event_time', 'eventTime', '事件发生时间']) ?? '';
       final importance = _clampInt(m['importance'], 1, 5, defaultVal: 3);
       final photoPathsRaw = m['photo_paths'] ?? m['photoPaths'];
       final photoPaths = _photoPathsToText(photoPathsRaw);
@@ -634,7 +785,10 @@ class ChatRepository {
     if (raw == null) return '';
     if (raw is String) return raw.trim();
     if (raw is List) {
-      final parts = raw.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
+      final parts = raw
+          .map((e) => e.toString().trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
       return jsonEncode(parts);
     }
     return raw.toString().trim();
@@ -692,7 +846,8 @@ class ChatRepository {
     return defaultVal ? 1 : 0;
   }
 
-  List<ExtractedRelationHint> _peopleHintsFromDecoded(Map<String, dynamic> root) {
+  List<ExtractedRelationHint> _peopleHintsFromDecoded(
+      Map<String, dynamic> root) {
     final list = root['people'] as List<dynamic>? ??
         root['data'] as List<dynamic>? ??
         root['人物列表'] as List<dynamic>?;
@@ -722,9 +877,8 @@ class ChatRepository {
           relation: _pickStr(m, const ['relation', '关系', '称谓']),
           phone: _pickStr(m, const ['phone', '电话', '手机', 'mobile']),
           note: _pickStr(m, const ['note', '备注', '说明']),
-          sameRelationKey: (srk != null && srk.trim().isNotEmpty)
-              ? srk.trim()
-              : null,
+          sameRelationKey:
+              (srk != null && srk.trim().isNotEmpty) ? srk.trim() : null,
         ),
       );
     }

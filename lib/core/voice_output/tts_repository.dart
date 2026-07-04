@@ -6,6 +6,13 @@ import 'package:dio/dio.dart';
 import '../../config/constants.dart';
 
 abstract class TtsSynthesizer {
+  Uri streamUri({
+    required String text,
+    String voice = 'wanqing',
+    int speed = 50,
+    int volume = 50,
+  });
+
   Future<Uint8List> synthesize({
     required String text,
     String voice = 'wanqing',
@@ -27,6 +34,23 @@ class TtsRepository implements TtsSynthesizer {
   TtsRepository({Dio? dio}) : _dio = dio ?? _createBinaryDio();
 
   final Dio _dio;
+
+  @override
+  Uri streamUri({
+    required String text,
+    String voice = 'wanqing',
+    int speed = 50,
+    int volume = 50,
+  }) {
+    return Uri.parse('${AppConstants.apiBaseUrl}/api/tts/stream').replace(
+      queryParameters: <String, String>{
+        'text': text,
+        'voice': voice,
+        'speed': speed.toString(),
+        'volume': volume.toString(),
+      },
+    );
+  }
 
   static Dio _createBinaryDio() {
     return Dio(

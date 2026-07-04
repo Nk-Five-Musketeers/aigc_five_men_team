@@ -13,6 +13,16 @@ import 'package:provider/provider.dart';
 
 class _FakeSynthesizer implements TtsSynthesizer {
   @override
+  Uri streamUri({
+    required String text,
+    String voice = 'wanqing',
+    int speed = 50,
+    int volume = 50,
+  }) {
+    return Uri.parse('http://localhost/tts');
+  }
+
+  @override
   Future<Uint8List> synthesize({
     required String text,
     String voice = 'wanqing',
@@ -29,6 +39,9 @@ class _FakePlayer implements VoiceOutputPlayer {
 
   @override
   Future<void> dispose() async {}
+
+  @override
+  Future<void> playUrl(String url, {String? mimeType}) async {}
 
   @override
   Future<void> play(Uint8List wavBytes) async {}

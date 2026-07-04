@@ -43,6 +43,32 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_stream_headers(self, status_code: int, content_type: str) -> None:
+        self.send_response(status_code)
+        self.send_header("Content-Type", content_type)
+        self._send_cors_headers()
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+    def _write_stream_chunk(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        self.wfile.write(chunk)
+        self.wfile.flush()
+
+    def _proxy_upstream_stream(self, response) -> None:
+        content_type = response.headers.get(
+            "Content-Type",
+            "text/event-stream; charset=utf-8",
+        )
+        self._send_stream_headers(response.getcode(), content_type)
+        while True:
+            chunk = response.read(4096)
+            if not chunk:
+                break
+            self._write_stream_chunk(chunk)
+
     def _read_content_length(self) -> int:
         return int(self.headers.get("Content-Length", "0"))
 
@@ -110,7 +136,11 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
         return {"role": "system", "content": legacy["content"]}
 
     def do_GET(self) -> None:
-        if urllib.parse.urlparse(self.path).path == "/health":
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/api/tts/stream":
+            self._handle_tts_stream(self._read_tts_query_payload())
+            return
+        if path == "/health":
             app_key = os.getenv("VIVO_APP_KEY") or os.getenv("APP_KEY")
             app_id = (
                 os.getenv("VIVO_APP_ID")
@@ -258,6 +288,77 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json(500, {"error": "tts_synthesize_failed", "detail": str(exc)})
 
+    def _read_tts_query_payload(self) -> Dict[str, Any]:
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        payload: Dict[str, Any] = {}
+        for key in ("text", "voice", "speed", "volume"):
+            values = query.get(key)
+            if values:
+                payload[key] = values[0]
+        for key in ("speed", "volume"):
+            if key in payload:
+                try:
+                    payload[key] = int(str(payload[key]))
+                except ValueError:
+                    pass
+        return payload
+
+    def _handle_tts_stream(self, req_data: Dict[str, Any]) -> None:
+        app_key = os.getenv("VIVO_APP_KEY") or os.getenv("APP_KEY")
+        if not app_key:
+            self._send_json(
+                400,
+                {"error": "Missing AppKey. Set VIVO_APP_KEY or APP_KEY for vivo TTS."},
+            )
+            return
+
+        app_id = (
+            os.getenv("VIVO_APP_ID")
+            or os.getenv("APP_ID")
+            or DEFAULT_TTS_APP_ID
+        )
+        try:
+            from speech_synthesis import (
+                VivoTTSError,
+                VivoTTSClient,
+                streaming_wav_header,
+            )
+            from tts_http import TTSRequestError, parse_tts_request
+
+            request = parse_tts_request(req_data)
+            client = VivoTTSClient(app_key=app_key, app_id=app_id)
+            pcm_stream = client.stream_pcm(
+                request.text,
+                voice=request.voice,
+                speed=request.speed,
+                volume=request.volume,
+            )
+            first_pcm = next(pcm_stream, None)
+            if not first_pcm:
+                raise VivoTTSError(11010, "TTS returned empty audio")
+        except TTSRequestError as exc:
+            self._send_json(400, {"error": "invalid_tts_request", "detail": str(exc)})
+            return
+        except VivoTTSError as exc:
+            self._send_json(
+                502,
+                {"error": "vivo_tts_failed", "code": exc.code, "detail": exc.desc},
+            )
+            return
+        except Exception as exc:
+            self._send_json(500, {"error": "tts_stream_failed", "detail": str(exc)})
+            return
+
+        self._send_stream_headers(200, "audio/wav")
+        self._write_stream_chunk(streaming_wav_header())
+        self._write_stream_chunk(first_pcm)
+        try:
+            for pcm_chunk in pcm_stream:
+                self._write_stream_chunk(pcm_chunk)
+        except Exception as exc:
+            print(f"[tts_stream] aborted after headers: {exc}", flush=True)
+
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self._send_cors_headers()
@@ -273,6 +374,14 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/tts/synthesize":
             self._handle_tts_synthesize()
+            return
+        if path == "/api/tts/stream":
+            req_data, err = self._read_json_body()
+            if err:
+                self._send_json(400, {"error": err})
+                return
+            assert req_data is not None
+            self._handle_tts_stream(req_data)
             return
         if path != "/api/chat":
             self._discard_request_body()
@@ -315,7 +424,7 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
         payload = {
             "model": req_data.get("model") or DEFAULT_MODEL,
             "messages": messages,
-            "stream": False,
+            "stream": bool(req_data.get("stream")),
         }
         for field in (
             "temperature",
@@ -347,11 +456,17 @@ class ChatProxyHandler(BaseHTTPRequestHandler):
 
         try:
             with urllib.request.urlopen(request, timeout=90) as response:
-                self._send_bytes(
-                    response.getcode(),
-                    response.read(),
-                    response.headers.get("Content-Type", "application/json; charset=utf-8"),
-                )
+                if payload["stream"]:
+                    self._proxy_upstream_stream(response)
+                else:
+                    self._send_bytes(
+                        response.getcode(),
+                        response.read(),
+                        response.headers.get(
+                            "Content-Type",
+                            "application/json; charset=utf-8",
+                        ),
+                    )
         except urllib.error.HTTPError as exc:
             self._send_bytes(
                 exc.code,

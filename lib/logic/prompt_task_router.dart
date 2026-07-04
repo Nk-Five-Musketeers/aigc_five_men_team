@@ -129,6 +129,43 @@ class PromptTaskRouter {
     return hits;
   }
 
+  static const List<String> memoryIntentKeywords = <String>[
+    '以前',
+    '从前',
+    '过去',
+    '年轻时候',
+    '年轻时',
+    '小时候',
+    '那时候',
+    '那会儿',
+    '老家',
+    '上班',
+    '工作那会儿',
+    '照片',
+    '相片',
+    '家人',
+    '家里人',
+    '女儿',
+    '儿子',
+    '老伴',
+    '孙子',
+    '孙女',
+    '记得',
+    '想起来',
+    '想起',
+    '回忆',
+    '往事',
+  ];
+
+  static bool hasMemoryIntent(String text) {
+    final t = text.trim();
+    if (t.isEmpty) return false;
+    for (final kw in memoryIntentKeywords) {
+      if (t.contains(kw)) return true;
+    }
+    return false;
+  }
+
   // ---------------------------------------------------------------------------
   // 主入口
   // ---------------------------------------------------------------------------
@@ -141,44 +178,45 @@ class PromptTaskRouter {
     required List<ChatMessage> recentHistory,
   }) async {
     try {
-      // 0) 取记忆摘要（给 global 用，无论走哪个分支都需要）
-      final memorySnippets = await _buildMemorySnippets(ownerUserId);
-
       // 1) emotion_support — 最高优先级，短路
       if (hasEmotionKeyword(userText)) {
         return RouteResult(
           activeTask: 'emotion_support',
           taskParams: await _buildEmotionParams(userText, ownerUserId),
-          memorySnippets: memorySnippets,
         );
       }
 
       // 2) daily_greeting
-      final greeting = await _tryDailyGreeting(ownerUserId, userText, recentHistory);
+      final greeting =
+          await _tryDailyGreeting(ownerUserId, userText, recentHistory);
       if (greeting != null) {
         return RouteResult(
           activeTask: 'daily_greeting',
           taskParams: greeting,
-          memorySnippets: memorySnippets,
         );
       }
 
       // 3) cognitive_test
-      final cognitive = await _tryCognitiveTest(ownerUserId, userText, recentHistory);
+      final cognitive =
+          await _tryCognitiveTest(ownerUserId, userText, recentHistory);
       if (cognitive != null) {
         return RouteResult(
           activeTask: 'cognitive_test',
           taskParams: cognitive,
+        );
+      }
+
+      // 4) memory_chat — 仅在明确记忆意图时触发
+      if (hasMemoryIntent(userText)) {
+        final memorySnippets = await _buildMemorySnippets(ownerUserId);
+        return RouteResult(
+          activeTask: 'memory_chat',
+          taskParams: _buildMemoryChatParams(userText, memorySnippets),
           memorySnippets: memorySnippets,
         );
       }
 
-      // 4) memory_chat — 默认兜底
-      return RouteResult(
-        activeTask: 'memory_chat',
-        taskParams: _buildMemoryChatParams(userText, memorySnippets),
-        memorySnippets: memorySnippets,
-      );
+      return const RouteResult();
     } catch (_) {
       return RouteResult.fallback();
     }
@@ -231,9 +269,8 @@ class PromptTaskRouter {
     List<String> snippets,
   ) {
     return <String, dynamic>{
-      'conversation_context': userText.length > 60
-          ? '${userText.substring(0, 60)}…'
-          : userText,
+      'conversation_context':
+          userText.length > 60 ? '${userText.substring(0, 60)}…' : userText,
     };
   }
 
@@ -250,8 +287,8 @@ class PromptTaskRouter {
     try {
       // 条件 1: 当日 daily_life_records 不存在 或 存在但至少 1 个字段为空
       final today = DateTime.now().toIso8601String().split('T').first;
-      final record =
-          await LocalDatabase.getDailyLifeRecordByUserAndDate(ownerUserId, today);
+      final record = await LocalDatabase.getDailyLifeRecordByUserAndDate(
+          ownerUserId, today);
 
       const allFields = <String>[
         'breakfast',
@@ -279,8 +316,7 @@ class PromptTaskRouter {
       if (missingFields.isEmpty) return null; // 今日已全部填完
 
       // 条件 2: 历史最近 6 条消息中无情绪关键词
-      final recent6 =
-          recentHistory.reversed.take(6).toList();
+      final recent6 = recentHistory.reversed.take(6).toList();
       for (final m in recent6) {
         if (m.isUser && hasEmotionKeyword(m.content)) {
           return null;
@@ -316,6 +352,7 @@ class PromptTaskRouter {
   ) async {
     try {
       // 条件 1: 用户当前文本不是问句（不打断老人提问）
+      if (hasMemoryIntent(userText)) return null;
       if (isQuestion(userText)) return null;
 
       // 条件 2: 用户上一条回复非问句 且 长度 ≥ 4 字（话题空档判定）

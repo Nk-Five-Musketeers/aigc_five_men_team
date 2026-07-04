@@ -5,6 +5,8 @@ import 'package:audioplayers/audioplayers.dart';
 abstract class VoiceOutputPlayer {
   Stream<void> get onComplete;
 
+  Future<void> playUrl(String url, {String? mimeType});
+
   Future<void> play(Uint8List wavBytes);
 
   Future<void> stop();
@@ -20,6 +22,13 @@ class AudioplayersVoiceOutputPlayer implements VoiceOutputPlayer {
 
   @override
   Stream<void> get onComplete => _player.onPlayerComplete;
+
+  @override
+  Future<void> playUrl(String url, {String? mimeType}) async {
+    await _player.play(
+      UrlSource(url, mimeType: mimeType),
+    );
+  }
 
   @override
   Future<void> play(Uint8List wavBytes) async {

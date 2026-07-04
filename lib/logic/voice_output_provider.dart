@@ -11,10 +11,12 @@ class VoiceOutputProvider extends ChangeNotifier {
     TtsSynthesizer? synthesizer,
     VoiceOutputPlayer? player,
     VoiceOutputSettingsStore? settingsStore,
+    bool preferStreaming = true,
   })  : _synthesizer = synthesizer ?? TtsRepository(),
         _player = player ?? AudioplayersVoiceOutputPlayer(),
         _settingsStore =
-            settingsStore ?? SharedPreferencesVoiceOutputSettingsStore() {
+            settingsStore ?? SharedPreferencesVoiceOutputSettingsStore(),
+        _preferStreaming = preferStreaming {
     _completionSubscription = _player.onComplete.listen((_) {
       if (_playingMessageId == null) return;
       _playingMessageId = null;
@@ -27,6 +29,7 @@ class VoiceOutputProvider extends ChangeNotifier {
   final TtsSynthesizer _synthesizer;
   final VoiceOutputPlayer _player;
   final VoiceOutputSettingsStore _settingsStore;
+  final bool _preferStreaming;
   final Map<String, Uint8List> _wavCache = <String, Uint8List>{};
 
   late final StreamSubscription<void> _completionSubscription;
@@ -82,18 +85,21 @@ class VoiceOutputProvider extends ChangeNotifier {
     _loadingMessageId = messageId;
     notifyListeners();
     try {
-      final cacheKey = '$defaultVoice|$_speed|$_volume|$text';
-      final bytes = _wavCache[cacheKey] ??
-          await _synthesizer.synthesize(
-            text: text,
-            voice: defaultVoice,
-            speed: _speed,
-            volume: _volume,
-          );
-      _wavCache[cacheKey] = bytes;
-      if (operationId != _operationId) return;
-
-      await _player.play(bytes);
+      if (_preferStreaming) {
+        final uri = _synthesizer.streamUri(
+          text: text,
+          voice: defaultVoice,
+          speed: _speed,
+          volume: _volume,
+        );
+        try {
+          await _player.playUrl(uri.toString(), mimeType: 'audio/wav');
+        } catch (_) {
+          await _playCachedBytes(text);
+        }
+      } else {
+        await _playCachedBytes(text);
+      }
       if (operationId != _operationId) {
         await _player.stop();
         return;
@@ -109,6 +115,19 @@ class VoiceOutputProvider extends ChangeNotifier {
       }
       rethrow;
     }
+  }
+
+  Future<void> _playCachedBytes(String text) async {
+    final cacheKey = '$defaultVoice|$_speed|$_volume|$text';
+    final bytes = _wavCache[cacheKey] ??
+        await _synthesizer.synthesize(
+          text: text,
+          voice: defaultVoice,
+          speed: _speed,
+          volume: _volume,
+        );
+    _wavCache[cacheKey] = bytes;
+    await _player.play(bytes);
   }
 
   Future<void> stop() async {

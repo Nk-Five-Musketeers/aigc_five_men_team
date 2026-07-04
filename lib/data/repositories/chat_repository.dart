@@ -102,6 +102,37 @@ const _speechPolishSystemPrompt = '''
 只输出整理后的正文一段，不要引号、不要 markdown。
 ''';
 
+const _memoryAlbumPolishSystemPrompt = '''
+你是「回忆图鉴正文润色」模块。你的任务不是重新创作图鉴，而是在给定事实和本地初稿基础上，把正文改得更自然、更连贯、更适合老人边看边听。
+
+必须遵守：
+1. 只基于输入中的 source_facts 和 local_album_draft 润色，禁止编造新人物、新地点、新时间、新经历、新亲属关系。
+2. 保留所有 chapter_id 和 item_id；不要新增、删除、改名任何章节或卡片。
+3. 不要改标题、照片 id、时间线、问题列表；只改 cover_text、opening_content、elder_profile_content、chapter_intro、item content、ending_content。
+4. 如果某个 item 原 content 为空，输出也必须为空字符串，不能补故事。
+5. 语言要像家属在温和讲述：自然、克制、连贯，适合朗读；避免字段味、报告味和模板味。
+6. 每段控制在 2 到 4 句，句子不要过长；可以合并重复信息，让段落有起承转合。
+7. 禁止出现「根据资料」「数据库」「字段」「信息不足」「未确认」「待补」「可以再补」「作为AI」等元叙述或占位话。
+8. 只输出一个 JSON 对象，不要 markdown 代码块，不要解释。
+
+输出 JSON 格式必须是：
+{
+  "cover_text": "",
+  "opening_content": "",
+  "elder_profile_content": "",
+  "chapters": [
+    {
+      "chapter_id": "",
+      "chapter_intro": "",
+      "items": [
+        {"item_id": "", "content": ""}
+      ]
+    }
+  ],
+  "ending_content": ""
+}
+''';
+
 const _photoIntentSystemPrompt = '''
 你是「老人相册选图」判定模块。根据老人一句话，结合【照片目录】判断要不要展示照片、要哪些、不要哪些。
 
@@ -143,7 +174,8 @@ const _photoIntentSystemPrompt = '''
 ''';
 
 class ChatRepository {
-  ChatRepository({ApiClient? apiClient}) : _apiClient = apiClient ?? ApiClient();
+  ChatRepository({ApiClient? apiClient})
+      : _apiClient = apiClient ?? ApiClient();
 
   final ApiClient _apiClient;
 
@@ -222,8 +254,7 @@ class ChatRepository {
     var systemPrompt = _speechPolishSystemPrompt;
     final hint = knownNamesHint.trim();
     if (hint.isNotEmpty) {
-      systemPrompt +=
-          '\n\n【档案中已有的人名/称谓（仅作同音错字对照，禁止编造新的人名）】\n$hint';
+      systemPrompt += '\n\n【档案中已有的人名/称谓（仅作同音错字对照，禁止编造新的人名）】\n$hint';
     }
 
     final response = await _apiClient.dio.post<Map<String, dynamic>>(
@@ -275,6 +306,35 @@ class ChatRepository {
     return s.trim();
   }
 
+  /// 用大模型润色本地生成的回忆图鉴正文。调用方负责把结果合并回本地图鉴；
+  /// 这里仅返回可替换文本，避免模型改动结构、照片关联与时间线。
+  Future<Map<String, dynamic>> polishMemoryAlbumTexts({
+    required Map<String, dynamic> polishInput,
+  }) async {
+    final response = await _postStandaloneChat(
+      chatTask: 'memory_album_polish',
+      messages: <Map<String, String>>[
+        {'role': 'system', 'content': _memoryAlbumPolishSystemPrompt},
+        {
+          'role': 'user',
+          'content': const JsonEncoder.withIndent('  ').convert(polishInput),
+        },
+      ],
+      temperature: 0.18,
+      maxTokens: 4200,
+    );
+
+    final text = _requireAssistantText(response);
+    final stripped = _stripCodeFence(text);
+    final decoded = jsonDecode(stripped);
+    if (decoded is! Map) {
+      throw FormatException('回忆图鉴润色结果不是 JSON 对象', stripped);
+    }
+    return Map<String, dynamic>.from(
+      decoded.map((key, value) => MapEntry(key.toString(), value)),
+    );
+  }
+
   /// 独立任务调用 /api/chat（自带 system，与主对话同模型同代理，参数与润色/抽取一致）。
   Future<Response<Map<String, dynamic>>> _postStandaloneChat({
     required List<Map<String, String>> messages,
@@ -299,7 +359,8 @@ class ChatRepository {
   }
 
   /// 上游或代理返回 error 字段时抛出可读异常（避免误判为「结果为空」）。
-  void _throwIfChatResponseError(Map<String, dynamic>? data, Response response) {
+  void _throwIfChatResponseError(
+      Map<String, dynamic>? data, Response response) {
     if (data == null) return;
     final err = data['error'];
     if (err == null) return;
@@ -429,7 +490,9 @@ class ChatRepository {
 
   List<Map<String, String>> _compactHistory(List<ChatMessage> history) {
     final normalMessages = history
-        .where((item) => item.kind == ChatMessageKind.text || item.kind == ChatMessageKind.error)
+        .where((item) =>
+            item.kind == ChatMessageKind.text ||
+            item.kind == ChatMessageKind.error)
         .toList();
     final recent = normalMessages.length > 12
         ? normalMessages.sublist(normalMessages.length - 12)
@@ -599,10 +662,10 @@ class ChatRepository {
         item.map((k, val) => MapEntry(k.toString(), val)),
       );
       final title = (_pickStr(m, const ['title', '标题']) ?? '').trim();
-      final desc = (_pickStr(m, const ['description', '描述', '详细描述']) ?? '').trim();
+      final desc =
+          (_pickStr(m, const ['description', '描述', '详细描述']) ?? '').trim();
       if (title.length < 2 && desc.length < 4) continue;
-      final et =
-          _pickStr(m, const ['event_time', 'eventTime', '事件发生时间']) ?? '';
+      final et = _pickStr(m, const ['event_time', 'eventTime', '事件发生时间']) ?? '';
       final importance = _clampInt(m['importance'], 1, 5, defaultVal: 3);
       final photoPathsRaw = m['photo_paths'] ?? m['photoPaths'];
       final photoPaths = _photoPathsToText(photoPathsRaw);
@@ -634,7 +697,10 @@ class ChatRepository {
     if (raw == null) return '';
     if (raw is String) return raw.trim();
     if (raw is List) {
-      final parts = raw.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
+      final parts = raw
+          .map((e) => e.toString().trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
       return jsonEncode(parts);
     }
     return raw.toString().trim();
@@ -692,7 +758,8 @@ class ChatRepository {
     return defaultVal ? 1 : 0;
   }
 
-  List<ExtractedRelationHint> _peopleHintsFromDecoded(Map<String, dynamic> root) {
+  List<ExtractedRelationHint> _peopleHintsFromDecoded(
+      Map<String, dynamic> root) {
     final list = root['people'] as List<dynamic>? ??
         root['data'] as List<dynamic>? ??
         root['人物列表'] as List<dynamic>?;
@@ -722,9 +789,8 @@ class ChatRepository {
           relation: _pickStr(m, const ['relation', '关系', '称谓']),
           phone: _pickStr(m, const ['phone', '电话', '手机', 'mobile']),
           note: _pickStr(m, const ['note', '备注', '说明']),
-          sameRelationKey: (srk != null && srk.trim().isNotEmpty)
-              ? srk.trim()
-              : null,
+          sameRelationKey:
+              (srk != null && srk.trim().isNotEmpty) ? srk.trim() : null,
         ),
       );
     }

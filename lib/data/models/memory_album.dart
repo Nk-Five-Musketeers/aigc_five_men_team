@@ -34,20 +34,31 @@ class MemoryAlbum {
   }
 
   MemoryAlbum copyWith({
+    String? albumId,
+    String? albumTitle,
+    String? albumSubtitle,
+    AlbumCover? cover,
+    AlbumText? opening,
+    ElderProfileCard? elderProfileCard,
+    List<MemoryAlbumChapter>? chapters,
+    List<MemoryTimelineEntry>? timeline,
+    AlbumText? ending,
+    List<FamilyQuestion>? familyQuestions,
+    AlbumNotes? notes,
     MemoryAlbumNarration? narration,
   }) {
     return MemoryAlbum(
-      albumId: albumId,
-      albumTitle: albumTitle,
-      albumSubtitle: albumSubtitle,
-      cover: cover,
-      opening: opening,
-      elderProfileCard: elderProfileCard,
-      chapters: chapters,
-      timeline: timeline,
-      ending: ending,
-      familyQuestions: familyQuestions,
-      notes: notes,
+      albumId: albumId ?? this.albumId,
+      albumTitle: albumTitle ?? this.albumTitle,
+      albumSubtitle: albumSubtitle ?? this.albumSubtitle,
+      cover: cover ?? this.cover,
+      opening: opening ?? this.opening,
+      elderProfileCard: elderProfileCard ?? this.elderProfileCard,
+      chapters: chapters ?? this.chapters,
+      timeline: timeline ?? this.timeline,
+      ending: ending ?? this.ending,
+      familyQuestions: familyQuestions ?? this.familyQuestions,
+      notes: notes ?? this.notes,
       narration: narration ?? this.narration,
     );
   }
@@ -127,6 +138,21 @@ class AlbumCover {
   final String coverText;
   final String recommendedCoverPhotoId;
 
+  AlbumCover copyWith({
+    String? title,
+    String? subtitle,
+    String? coverText,
+    String? recommendedCoverPhotoId,
+  }) {
+    return AlbumCover(
+      title: title ?? this.title,
+      subtitle: subtitle ?? this.subtitle,
+      coverText: coverText ?? this.coverText,
+      recommendedCoverPhotoId:
+          recommendedCoverPhotoId ?? this.recommendedCoverPhotoId,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
         'title': title,
         'subtitle': subtitle,
@@ -144,6 +170,16 @@ class AlbumText {
   final String title;
   final String content;
 
+  AlbumText copyWith({
+    String? title,
+    String? content,
+  }) {
+    return AlbumText(
+      title: title ?? this.title,
+      content: content ?? this.content,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
         'title': title,
         'content': content,
@@ -160,6 +196,18 @@ class ElderProfileCard {
   final String title;
   final String content;
   final List<ProfileItem> profileItems;
+
+  ElderProfileCard copyWith({
+    String? title,
+    String? content,
+    List<ProfileItem>? profileItems,
+  }) {
+    return ElderProfileCard(
+      title: title ?? this.title,
+      content: content ?? this.content,
+      profileItems: profileItems ?? this.profileItems,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         'title': title,
@@ -200,6 +248,24 @@ class MemoryAlbumChapter {
   final String chapterType;
   final List<MemoryAlbumItem> items;
 
+  MemoryAlbumChapter copyWith({
+    String? chapterId,
+    String? chapterTitle,
+    String? chapterSubtitle,
+    String? chapterIntro,
+    String? chapterType,
+    List<MemoryAlbumItem>? items,
+  }) {
+    return MemoryAlbumChapter(
+      chapterId: chapterId ?? this.chapterId,
+      chapterTitle: chapterTitle ?? this.chapterTitle,
+      chapterSubtitle: chapterSubtitle ?? this.chapterSubtitle,
+      chapterIntro: chapterIntro ?? this.chapterIntro,
+      chapterType: chapterType ?? this.chapterType,
+      items: items ?? this.items,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
         'chapter_id': chapterId,
         'chapter_title': chapterTitle,
@@ -228,6 +294,26 @@ class MemoryAlbumItem {
   final String photoId;
   final List<String> relatedProfileFields;
   final List<String> familyQuestions;
+
+  MemoryAlbumItem copyWith({
+    String? itemId,
+    String? itemType,
+    String? title,
+    String? content,
+    String? photoId,
+    List<String>? relatedProfileFields,
+    List<String>? familyQuestions,
+  }) {
+    return MemoryAlbumItem(
+      itemId: itemId ?? this.itemId,
+      itemType: itemType ?? this.itemType,
+      title: title ?? this.title,
+      content: content ?? this.content,
+      photoId: photoId ?? this.photoId,
+      relatedProfileFields: relatedProfileFields ?? this.relatedProfileFields,
+      familyQuestions: familyQuestions ?? this.familyQuestions,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         'item_id': itemId,
@@ -290,6 +376,22 @@ class AlbumNotes {
   final List<String> addedParts;
   final List<String> possibleConflicts;
   final List<String> missingInformation;
+
+  AlbumNotes copyWith({
+    bool? usedExistingAlbum,
+    List<String>? rewrittenParts,
+    List<String>? addedParts,
+    List<String>? possibleConflicts,
+    List<String>? missingInformation,
+  }) {
+    return AlbumNotes(
+      usedExistingAlbum: usedExistingAlbum ?? this.usedExistingAlbum,
+      rewrittenParts: rewrittenParts ?? this.rewrittenParts,
+      addedParts: addedParts ?? this.addedParts,
+      possibleConflicts: possibleConflicts ?? this.possibleConflicts,
+      missingInformation: missingInformation ?? this.missingInformation,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         'used_existing_album': usedExistingAlbum,

@@ -1,10 +1,12 @@
 import 'dart:convert';
+import 'dart:async';
 
 import '../../core/narration/narration_text.dart';
 import '../local_db/local_database.dart';
 import '../models/memory_album.dart';
 import '../models/profile_photo.dart';
 import '../models/profile_video.dart';
+import 'chat_repository.dart';
 
 part 'memory_album_composer.dart';
 
@@ -25,6 +27,14 @@ class MemoryAlbumDraft {
 }
 
 class MemoryAlbumRepository {
+  MemoryAlbumRepository({
+    ChatRepository? chatRepository,
+    this.enableAiPolish = true,
+  }) : _chatRepository = chatRepository ?? ChatRepository();
+
+  final ChatRepository _chatRepository;
+  final bool enableAiPolish;
+
   Future<MemoryAlbumDraft> buildForUser(String ownerUserId) async {
     final user = await LocalDatabase.getUserById(ownerUserId);
     final familyMembers =
@@ -46,7 +56,7 @@ class MemoryAlbumRepository {
       dailyLifeRecords: dailyLifeRecords,
       photos: allMedia,
     );
-    final album = MemoryAlbumComposer.compose(
+    final localAlbum = MemoryAlbumComposer.compose(
       ownerUserId: ownerUserId,
       user: user,
       familyMembers: familyMembers,
@@ -54,12 +64,36 @@ class MemoryAlbumRepository {
       dailyLifeRecords: dailyLifeRecords,
       photos: allMedia,
     );
+    final album = await _tryPolishAlbum(
+      localAlbum,
+      generationInput: generationInput,
+    );
 
     return MemoryAlbumDraft(
       album: album,
       photos: allMedia,
       generationInput: generationInput,
     );
+  }
+
+  Future<MemoryAlbum> _tryPolishAlbum(
+    MemoryAlbum localAlbum, {
+    required Map<String, dynamic> generationInput,
+  }) async {
+    if (!enableAiPolish || !localAlbum.hasContent) return localAlbum;
+
+    try {
+      final polishInput = MemoryAlbumComposer.buildPolishInput(
+        album: localAlbum,
+        generationInput: generationInput,
+      );
+      final polished = await _chatRepository
+          .polishMemoryAlbumTexts(polishInput: polishInput)
+          .timeout(const Duration(seconds: 35));
+      return MemoryAlbumComposer.applyPolishedTexts(localAlbum, polished);
+    } catch (_) {
+      return localAlbum;
+    }
   }
 
   static List<ProfilePhotoModel> _photosFromVideos(

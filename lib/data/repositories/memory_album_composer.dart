@@ -226,6 +226,161 @@ content 和 narration_text 必须是可以直接朗读的故事正文，不能�
     return album.copyWith(narration: buildAlbumNarration(album));
   }
 
+  static Map<String, dynamic> buildPolishInput({
+    required MemoryAlbum album,
+    required Map<String, dynamic> generationInput,
+  }) {
+    return {
+      'source_facts': _polishSourceFacts(generationInput),
+      'local_album_draft': _albumPolishDraft(album),
+    };
+  }
+
+  static MemoryAlbum applyPolishedTexts(
+    MemoryAlbum album,
+    Map<String, dynamic> polished,
+  ) {
+    var changed = false;
+
+    String replaceText(Object? raw, String original) {
+      if (original.trim().isEmpty) return '';
+      final next = _polishedText(raw);
+      if (next.isEmpty || !_isSafePolishedText(next)) return original;
+      if (next == original) return original;
+      changed = true;
+      return next;
+    }
+
+    final chapterPatches = <String, Map<String, dynamic>>{};
+    for (final raw in _asList(polished['chapters'])) {
+      final patch = _mapFrom(raw);
+      if (patch == null) continue;
+      final chapterId = _polishedText(patch['chapter_id']);
+      if (chapterId.isNotEmpty) chapterPatches[chapterId] = patch;
+    }
+
+    final chapters = album.chapters.map((chapter) {
+      final chapterPatch = chapterPatches[chapter.chapterId];
+      if (chapterPatch == null) return chapter;
+
+      final itemPatches = <String, Map<String, dynamic>>{};
+      for (final raw in _asList(chapterPatch['items'])) {
+        final patch = _mapFrom(raw);
+        if (patch == null) continue;
+        final itemId = _polishedText(patch['item_id']);
+        if (itemId.isNotEmpty) itemPatches[itemId] = patch;
+      }
+
+      final items = chapter.items.map((item) {
+        final itemPatch = itemPatches[item.itemId];
+        if (itemPatch == null) return item;
+        return item.copyWith(
+          content: replaceText(itemPatch['content'], item.content),
+        );
+      }).toList();
+
+      return chapter.copyWith(
+        chapterIntro:
+            replaceText(chapterPatch['chapter_intro'], chapter.chapterIntro),
+        items: items,
+      );
+    }).toList();
+
+    final updated = album.copyWith(
+      cover: album.cover.copyWith(
+        coverText: replaceText(polished['cover_text'], album.cover.coverText),
+      ),
+      opening: album.opening.copyWith(
+        content: replaceText(
+          polished['opening_content'],
+          album.opening.content,
+        ),
+      ),
+      elderProfileCard: album.elderProfileCard.copyWith(
+        content: replaceText(
+          polished['elder_profile_content'],
+          album.elderProfileCard.content,
+        ),
+      ),
+      chapters: chapters,
+      ending: album.ending.copyWith(
+        content: replaceText(polished['ending_content'], album.ending.content),
+      ),
+      notes: changed
+          ? album.notes.copyWith(
+              rewrittenParts: const ['AI润色正文'],
+            )
+          : album.notes,
+    );
+    return updated.copyWith(narration: buildAlbumNarration(updated));
+  }
+
+  static Map<String, dynamic> _polishSourceFacts(
+    Map<String, dynamic> generationInput,
+  ) {
+    const keys = <String>[
+      'elder_profile',
+      'family_profile',
+      'life_experience',
+      'daily_life_info',
+      'photo_analysis_results',
+      'family_notes',
+    ];
+    return {
+      for (final key in keys)
+        if (generationInput.containsKey(key)) key: generationInput[key],
+    };
+  }
+
+  static Map<String, dynamic> _albumPolishDraft(MemoryAlbum album) {
+    return {
+      'album_title': album.albumTitle,
+      'album_subtitle': album.albumSubtitle,
+      'cover': {
+        'title': album.cover.title,
+        'subtitle': album.cover.subtitle,
+        'cover_text': album.cover.coverText,
+        'recommended_cover_photo_id': album.cover.recommendedCoverPhotoId,
+      },
+      'opening': {
+        'title': album.opening.title,
+        'content': album.opening.content,
+      },
+      'elder_profile_card': {
+        'title': album.elderProfileCard.title,
+        'content': album.elderProfileCard.content,
+        'profile_items': album.elderProfileCard.profileItems
+            .map((item) => item.toJson())
+            .toList(),
+      },
+      'chapters': [
+        for (final chapter in album.chapters)
+          {
+            'chapter_id': chapter.chapterId,
+            'chapter_title': chapter.chapterTitle,
+            'chapter_subtitle': chapter.chapterSubtitle,
+            'chapter_intro': chapter.chapterIntro,
+            'chapter_type': chapter.chapterType,
+            'items': [
+              for (final item in chapter.items)
+                {
+                  'item_id': item.itemId,
+                  'item_type': item.itemType,
+                  'title': item.title,
+                  'content': item.content,
+                  'photo_id': item.photoId,
+                  'related_profile_fields': item.relatedProfileFields,
+                },
+            ],
+          },
+      ],
+      'ending': {
+        'title': album.ending.title,
+        'content': album.ending.content,
+      },
+    };
+  }
+
   static MemoryAlbumChapter _buildProfileChapter(
     String elderName,
     Map<String, dynamic>? user,
@@ -932,6 +1087,48 @@ content 和 narration_text 必须是可以直接朗读的故事正文，不能�
       return false;
     }
     return defaultValue;
+  }
+
+  static String _polishedText(Object? value) {
+    if (value == null) return '';
+    if (value is String) return value.trim();
+    return value.toString().trim();
+  }
+
+  static bool _isSafePolishedText(String text) {
+    final value = text.trim();
+    if (value.isEmpty) return false;
+    if (value.length > 900) return false;
+
+    const forbidden = <String>[
+      '根据资料',
+      '根据数据库',
+      '数据库',
+      '字段',
+      '信息不足',
+      '未确认',
+      '待确认',
+      '待补',
+      '可以再补',
+      '还可以补',
+      '作为AI',
+      '作为 AI',
+      '我是AI',
+      '我是 AI',
+    ];
+    return !forbidden.any(value.contains);
+  }
+
+  static List<dynamic> _asList(Object? value) {
+    if (value is List) return value;
+    return const <dynamic>[];
+  }
+
+  static Map<String, dynamic>? _mapFrom(Object? value) {
+    if (value is! Map) return null;
+    return Map<String, dynamic>.from(
+      value.map((key, val) => MapEntry(key.toString(), val)),
+    );
   }
 
   static String _text(Object? value) {

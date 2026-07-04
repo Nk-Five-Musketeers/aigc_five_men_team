@@ -313,4 +313,123 @@ void main() {
         .singleWhere((item) => item.itemId == 'photo_photo_no_info');
     expect(photoItem.content, isEmpty);
   });
+
+  test('buildPolishInput exposes source facts and local text draft', () {
+    final generationInput = MemoryAlbumComposer.buildGenerationInput(
+      ownerUserId: 'elder_1',
+      user: {
+        'name': '于小晨',
+        'hometown': '天津津南',
+        'career': '教师',
+        'hobbies': '听戏',
+      },
+      familyMembers: const [],
+      memoryEvents: const [],
+      dailyLifeRecords: const [],
+      photos: const [],
+    );
+    final album = MemoryAlbumComposer.compose(
+      ownerUserId: 'elder_1',
+      user: {
+        'name': '于小晨',
+        'hometown': '天津津南',
+        'career': '教师',
+        'hobbies': '听戏',
+      },
+      familyMembers: const [],
+      memoryEvents: const [],
+      dailyLifeRecords: const [],
+      photos: const [],
+    );
+
+    final polishInput = MemoryAlbumComposer.buildPolishInput(
+      album: album,
+      generationInput: generationInput,
+    );
+
+    final facts = polishInput['source_facts'] as Map<String, dynamic>;
+    expect(facts['elder_profile']['name'], '于小晨');
+    expect(facts.containsKey('generation_requirements'), isFalse);
+
+    final draft = polishInput['local_album_draft'] as Map<String, dynamic>;
+    expect(draft['album_title'], '于小晨的回忆图鉴');
+    expect(draft['elder_profile_card']['content'], contains('教师'));
+    expect(draft['chapters'], isA<List<dynamic>>());
+  });
+
+  test(
+      'applyPolishedTexts merges safe text and keeps empty photo stories empty',
+      () {
+    final album = MemoryAlbumComposer.compose(
+      ownerUserId: 'elder_1',
+      user: {
+        'name': '张桂芳',
+        'career': '纺织厂打工',
+        'hobbies': '看电视',
+        'food_preference': '清淡，爱吃饺子',
+        'personality': '温和而坚定',
+        'dialect': '天津话',
+      },
+      familyMembers: const [],
+      memoryEvents: const [],
+      dailyLifeRecords: const [],
+      photos: [
+        ProfilePhotoModel(
+          id: 'photo_empty',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\photo_empty.jpg',
+          category: ProfilePhotoCategory.other,
+        ),
+      ],
+    );
+
+    final polished = MemoryAlbumComposer.applyPolishedTexts(album, {
+      'cover_text': '根据资料，张桂芳的故事正在展开。',
+      'opening_content': '这是张桂芳的回忆，也是家人一起记住的日子。',
+      'elder_profile_content': '张桂芳年轻时在纺织厂工作，那是一段踏实忙碌的日子。',
+      'chapters': [
+        {
+          'chapter_id': 'profile',
+          'chapter_intro': '张桂芳的故事，藏在家人熟悉的一件件小事里。',
+          'items': [
+            {
+              'item_id': 'profile_overview',
+              'content': '张桂芳年轻时在纺织厂工作，那是一段踏实忙碌的日子。平时在家里，她喜欢看电视，也喜欢清淡的饭菜和饺子。',
+            },
+          ],
+        },
+        {
+          'chapter_id': 'photo_memory',
+          'chapter_intro': '这些照片留下了张桂芳生命里的一个个片刻。',
+          'items': [
+            {
+              'item_id': 'photo_photo_empty',
+              'content': '这是一段模型不能补写的照片故事。',
+            },
+          ],
+        },
+      ],
+      'ending_content': '张桂芳的日子还在继续，家人的记挂也还在继续。',
+    });
+
+    expect(polished.cover.coverText, album.cover.coverText);
+    expect(polished.opening.content, contains('一起记住的日子'));
+    expect(polished.elderProfileCard.content, contains('踏实忙碌'));
+    expect(polished.notes.rewrittenParts, contains('AI润色正文'));
+
+    final profileItem = polished.chapters
+        .expand((chapter) => chapter.items)
+        .singleWhere((item) => item.itemId == 'profile_overview');
+    expect(profileItem.content, contains('平时在家里'));
+
+    final emptyPhotoItem = polished.chapters
+        .expand((chapter) => chapter.items)
+        .singleWhere((item) => item.itemId == 'photo_photo_empty');
+    expect(emptyPhotoItem.content, isEmpty);
+
+    final narrationText =
+        polished.narration.segments.map((segment) => segment.text).join();
+    expect(narrationText, contains('踏实忙碌'));
+    expect(narrationText, isNot(contains('模型不能补写')));
+  });
 }

@@ -29,10 +29,12 @@ class MemoryAlbumRepository {
   MemoryAlbumRepository({
     ChatRepository? chatRepository,
     this.enableAiPolish = true,
+    this.requireAiPolish = false,
   }) : _chatRepository = chatRepository ?? ChatRepository();
 
   final ChatRepository _chatRepository;
   final bool enableAiPolish;
+  final bool requireAiPolish;
 
   Future<MemoryAlbumDraft> buildForUser(String ownerUserId) async {
     final user = await LocalDatabase.getUserById(ownerUserId);
@@ -88,9 +90,10 @@ class MemoryAlbumRepository {
       );
       final polished = await _chatRepository
           .polishMemoryAlbumTexts(polishInput: polishInput)
-          .timeout(const Duration(seconds: 35));
+          .timeout(const Duration(seconds: 120));
       return MemoryAlbumComposer.applyPolishedTexts(localAlbum, polished);
     } catch (_) {
+      if (requireAiPolish) rethrow;
       return localAlbum;
     }
   }

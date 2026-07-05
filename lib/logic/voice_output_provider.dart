@@ -72,6 +72,7 @@ class VoiceOutputProvider extends ChangeNotifier {
   Future<void> toggleReadAloud({
     required String messageId,
     required String text,
+    bool useStreaming = true,
   }) async {
     if (_loadingMessageId == messageId || _playingMessageId == messageId) {
       await stop();
@@ -85,7 +86,7 @@ class VoiceOutputProvider extends ChangeNotifier {
     _loadingMessageId = messageId;
     notifyListeners();
     try {
-      if (_preferStreaming) {
+      if (_preferStreaming && useStreaming) {
         final uri = _synthesizer.streamUri(
           text: text,
           voice: defaultVoice,

@@ -1238,7 +1238,9 @@ enum _MemoryViewMode { cover, reading, timeline }
 
 class _MemoryBookViewState extends State<_MemoryBookView> {
   late Future<MemoryAlbumDraft> _future;
-  final MemoryAlbumRepository _repository = MemoryAlbumRepository();
+  final MemoryAlbumRepository _repository = MemoryAlbumRepository(
+    requireAiPolish: true,
+  );
   final PageController _pageController = PageController();
   VoiceOutputProvider? _voiceOutput;
   _MemoryViewMode _mode = _MemoryViewMode.cover;
@@ -1285,6 +1287,19 @@ class _MemoryBookViewState extends State<_MemoryBookView> {
     return FutureBuilder<MemoryAlbumDraft>(
       future: _future,
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return ListView(
+            padding: const EdgeInsets.only(bottom: 14),
+            children: [
+              _MemoryAlbumHeader(onRefresh: _refresh),
+              const SizedBox(height: 16),
+              _EmptyHint(
+                title: 'AI 润色失败',
+                hint: '请确认本地代理和模型服务已启动后刷新。错误：${snapshot.error}',
+              ),
+            ],
+          );
+        }
         if (!snapshot.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
@@ -1409,6 +1424,7 @@ class _MemoryBookViewState extends State<_MemoryBookView> {
       await context.read<VoiceOutputProvider>().toggleReadAloud(
             messageId: _messageId(page),
             text: page.narrationText,
+            useStreaming: false,
           );
     } catch (error) {
       if (!mounted) return;

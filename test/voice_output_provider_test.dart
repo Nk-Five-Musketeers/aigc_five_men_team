@@ -156,6 +156,31 @@ void main() {
     provider.dispose();
   });
 
+  test('can force non-streaming playback without changing voice', () async {
+    final synthesizer = _FakeSynthesizer();
+    final player = _FakePlayer();
+    final provider = VoiceOutputProvider(
+      synthesizer: synthesizer,
+      player: player,
+      settingsStore: _FakeSettingsStore(speed: 42, volume: 63),
+    );
+
+    await provider.loadSettings();
+    await provider.toggleReadAloud(
+      messageId: 'memory-page-1',
+      text: '这一页回忆要完整朗读。',
+      useStreaming: false,
+    );
+
+    expect(provider.playingMessageId, 'memory-page-1');
+    expect(player.events.single, 'play:1,2,3,4');
+    expect(synthesizer.calls, hasLength(1));
+    expect(synthesizer.calls.single.voice, 'wanqing');
+    expect(synthesizer.calls.single.speed, 42);
+    expect(synthesizer.calls.single.volume, 63);
+    provider.dispose();
+  });
+
   test('tapping the playing reply stops playback', () async {
     final player = _FakePlayer();
     final provider = VoiceOutputProvider(

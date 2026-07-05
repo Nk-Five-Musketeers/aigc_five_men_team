@@ -16,7 +16,9 @@ class _MemoryBookView extends StatefulWidget {
 
 class _MemoryBookViewState extends State<_MemoryBookView> {
   late Future<MemoryAlbumDraft> _future;
-  final MemoryAlbumRepository _repository = MemoryAlbumRepository();
+  final MemoryAlbumRepository _repository = MemoryAlbumRepository(
+    requireAiPolish: true,
+  );
   late final NarrationPlayer _narrationPlayer;
   final ScrollController _scrollController = ScrollController();
   final Map<String, GlobalKey> _segmentKeys = <String, GlobalKey>{};
@@ -61,6 +63,19 @@ class _MemoryBookViewState extends State<_MemoryBookView> {
     return FutureBuilder<MemoryAlbumDraft>(
       future: _future,
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return ListView(
+            padding: const EdgeInsets.only(bottom: 14),
+            children: [
+              _MemoryAlbumHeader(onRefresh: _refresh),
+              const SizedBox(height: 16),
+              _EmptyHint(
+                title: 'AI 润色失败',
+                hint: '请确认本地代理和模型服务已启动后刷新。错误：${snapshot.error}',
+              ),
+            ],
+          );
+        }
         if (!snapshot.hasData) {
           return const Center(child: CircularProgressIndicator());
         }

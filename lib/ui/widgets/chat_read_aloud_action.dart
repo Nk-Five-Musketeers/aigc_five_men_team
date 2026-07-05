@@ -77,6 +77,7 @@ class ChatReadAloudAction extends StatelessWidget {
       await context.read<VoiceOutputProvider>().toggleReadAloud(
             messageId: message.id,
             text: message.content,
+            useStreaming: false,
           );
     } catch (error) {
       if (!context.mounted) return;

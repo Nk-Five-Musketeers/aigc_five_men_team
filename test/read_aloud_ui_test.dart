@@ -34,6 +34,9 @@ class _FakeSynthesizer implements TtsSynthesizer {
 }
 
 class _FakePlayer implements VoiceOutputPlayer {
+  int playUrlCount = 0;
+  int playCount = 0;
+
   @override
   Stream<void> get onComplete => const Stream<void>.empty();
 
@@ -41,10 +44,14 @@ class _FakePlayer implements VoiceOutputPlayer {
   Future<void> dispose() async {}
 
   @override
-  Future<void> playUrl(String url, {String? mimeType}) async {}
+  Future<void> playUrl(String url, {String? mimeType}) async {
+    playUrlCount++;
+  }
 
   @override
-  Future<void> play(Uint8List wavBytes) async {}
+  Future<void> play(Uint8List wavBytes) async {
+    playCount++;
+  }
 
   @override
   Future<void> stop() async {}
@@ -72,6 +79,14 @@ VoiceOutputProvider _provider() {
   );
 }
 
+VoiceOutputProvider _providerWithPlayer(_FakePlayer player) {
+  return VoiceOutputProvider(
+    synthesizer: _FakeSynthesizer(),
+    player: player,
+    settingsStore: _FakeSettingsStore(),
+  );
+}
+
 Widget _wrap(VoiceOutputProvider provider, Widget child) {
   return ChangeNotifierProvider<VoiceOutputProvider>.value(
     value: provider,
@@ -93,7 +108,8 @@ ChatMessage _message({required bool isUser, ChatMessageKind? kind}) {
 
 void main() {
   testWidgets('assistant reply shows a read aloud action', (tester) async {
-    final provider = _provider();
+    final player = _FakePlayer();
+    final provider = _providerWithPlayer(player);
     addTearDown(provider.dispose);
 
     await tester.pumpWidget(
@@ -105,6 +121,8 @@ void main() {
     await tester.tap(find.byTooltip('朗读这条回复'));
     await tester.pump();
     expect(provider.playingMessageId, 'assistant-1');
+    expect(player.playCount, 1);
+    expect(player.playUrlCount, 0);
   });
 
   testWidgets('user reply does not show a read aloud action', (tester) async {

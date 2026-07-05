@@ -1,5 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'package:aigc_five_men_team/data/local_db/local_database.dart';
+import 'package:aigc_five_men_team/data/models/chat_message.dart';
 import 'package:aigc_five_men_team/logic/prompt_task_router.dart';
 
 /// PromptTaskRouter 纯逻辑单元测试。
@@ -9,6 +12,15 @@ import 'package:aigc_five_men_team/logic/prompt_task_router.dart';
 /// resolve 的完整场景在集成测试中覆盖。
 
 void main() {
+  setUpAll(() {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  });
+
+  tearDownAll(() async {
+    await LocalDatabase.close();
+  });
+
   // ---------------------------------------------------------------------------
   // 情绪关键词扫描（通过 resolve 的 active_task 返回验证）
   // ---------------------------------------------------------------------------
@@ -136,6 +148,67 @@ void main() {
   // ---------------------------------------------------------------------------
   // RouteResult 降级兜底
   // ---------------------------------------------------------------------------
+  group('memory intent detection', () {
+    test('recognizes explicit memory cues', () {
+      for (final text in <String>[
+        '我想看看以前的照片',
+        '那时候在老家上班',
+        '忽然想起来女儿小时候的事',
+      ]) {
+        expect(PromptTaskRouter.hasMemoryIntent(text), isTrue);
+      }
+    });
+
+    test('ordinary chat does not count as memory intent', () {
+      for (final text in <String>[
+        '今天天气挺好',
+        '我刚吃完饭',
+        '一会儿想看电视',
+      ]) {
+        expect(PromptTaskRouter.hasMemoryIntent(text), isFalse);
+      }
+    });
+  });
+
+  group('resolve routing', () {
+    test('ordinary chat falls back to global only', () async {
+      final ownerUserId = await _prepareRouteUser();
+      final result = await PromptTaskRouter.resolve(
+        userText: '今天天气挺好',
+        ownerUserId: ownerUserId,
+        recentHistory: [_userMessage('今天天气挺好')],
+      );
+
+      expect(result.activeTask, isNull);
+      expect(result.memorySnippets, isEmpty);
+    });
+
+    test('explicit memory intent routes to memory_chat', () async {
+      final ownerUserId = await _prepareRouteUser(withMemory: true);
+      final result = await PromptTaskRouter.resolve(
+        userText: '我想起以前在老家上班的事',
+        ownerUserId: ownerUserId,
+        recentHistory: [_userMessage('我想起以前在老家上班的事')],
+      );
+
+      expect(result.activeTask, 'memory_chat');
+      expect(result.memorySnippets, isNotEmpty);
+    });
+
+    test('emotion support still has priority and carries no memory snippets',
+        () async {
+      final ownerUserId = await _prepareRouteUser(withMemory: true);
+      final result = await PromptTaskRouter.resolve(
+        userText: '我今天很难受',
+        ownerUserId: ownerUserId,
+        recentHistory: [_userMessage('我今天很难受')],
+      );
+
+      expect(result.activeTask, 'emotion_support');
+      expect(result.memorySnippets, isEmpty);
+    });
+  });
+
   group('RouteResult', () {
     test('fallback 返回 null activeTask', () {
       final r = RouteResult.fallback();
@@ -148,4 +221,59 @@ void main() {
       expect(r.memorySnippets, ['记忆1']);
     });
   });
+}
+
+int _routeUserSeq = 0;
+
+Future<String> _prepareRouteUser({bool withMemory = false}) async {
+  final ownerUserId =
+      'test_prompt_router_${DateTime.now().microsecondsSinceEpoch}_${_routeUserSeq++}';
+  await LocalDatabase.ensureUserExists(ownerUserId);
+  await _completeDailyRecord(ownerUserId);
+  await _suppressCognitiveRoute(ownerUserId);
+  if (withMemory) {
+    await LocalDatabase.insertMemoryEvent({
+      'owner_user_id': ownerUserId,
+      'event_time': '1980年代',
+      'title': '老家上班',
+      'description': '年轻时候在老家附近上班。',
+      'importance': 4,
+      'verified': 1,
+    });
+  }
+  return ownerUserId;
+}
+
+Future<void> _completeDailyRecord(String ownerUserId) async {
+  final today = DateTime.now().toIso8601String().split('T').first;
+  await LocalDatabase.upsertDailyLifeRecordByDate({
+    'owner_user_id': ownerUserId,
+    'date': today,
+    'breakfast': '粥',
+    'lunch': '面条',
+    'dinner': '米饭',
+    'activities': '散步',
+    'people_met': '家人',
+    'places_went': '小区',
+    'mood': '平静',
+  });
+}
+
+Future<void> _suppressCognitiveRoute(String ownerUserId) async {
+  for (var i = 0; i < 3; i++) {
+    await LocalDatabase.insertCognitiveTest({
+      'owner_user_id': ownerUserId,
+      'test_type': 'object',
+      'is_valid': 1,
+    });
+  }
+}
+
+ChatMessage _userMessage(String content) {
+  return ChatMessage(
+    id: 'test_msg_${DateTime.now().microsecondsSinceEpoch}',
+    content: content,
+    isUser: true,
+    timestamp: DateTime.now(),
+  );
 }

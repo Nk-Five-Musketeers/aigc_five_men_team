@@ -4,17 +4,18 @@ import base64
 import io
 import json
 import os
+import struct
 import time
 import uuid
 import wave
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Iterator, List, Optional
 from urllib.parse import urlencode
 
 TTS_URL = "wss://api-ai.vivo.com.cn/tts"
 DEFAULT_APP_ID = "2026594139"
 DEFAULT_ENGINE_ID = "short_audio_synthesis_jovi"
 DEFAULT_USER_ID = "2addc42b7ae689dfdf1c63e220df52a2"
-DEFAULT_VOICE = "yunye"
+DEFAULT_VOICE = "wanqing"
 MAX_TEXT_BYTES = 2048
 _SENTENCE_BOUNDARIES = frozenset("。！？；…．.!?\n，,、：:")
 
@@ -86,6 +87,33 @@ def pcm_to_wav(pcm_bytes: bytes) -> bytes:
     return output.getvalue()
 
 
+def streaming_wav_header(
+    *,
+    sample_rate: int = 24000,
+    channels: int = 1,
+    bits_per_sample: int = 16,
+) -> bytes:
+    """Return a WAV header suitable for HTTP streams with unknown final length."""
+    byte_rate = sample_rate * channels * bits_per_sample // 8
+    block_align = channels * bits_per_sample // 8
+    return struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        0xFFFFFFFF,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        bits_per_sample,
+        b"data",
+        0xFFFFFFFF,
+    )
+
+
 class VivoTTSClient:
     """Small synchronous adapter around Vivo's streaming TTS WebSocket."""
 
@@ -117,14 +145,22 @@ class VivoTTSClient:
         speed: int = 50,
         volume: int = 50,
     ) -> bytes:
-        pcm_parts = [
-            self._synthesize_pcm_chunk(chunk, voice=voice, speed=speed, volume=volume)
-            for chunk in split_text_utf8(text)
-        ]
-        pcm_bytes = b"".join(pcm_parts)
+        pcm_bytes = b"".join(
+            self.stream_pcm(text, voice=voice, speed=speed, volume=volume)
+        )
         if not pcm_bytes:
             raise VivoTTSError(11010, "TTS returned empty audio")
         return pcm_to_wav(pcm_bytes)
+
+    def stream_pcm(
+        self,
+        text: str,
+        voice: str = DEFAULT_VOICE,
+        speed: int = 50,
+        volume: int = 50,
+    ) -> Iterator[bytes]:
+        for chunk in split_text_utf8(text):
+            yield from self._stream_pcm_chunk(chunk, voice=voice, speed=speed, volume=volume)
 
     def _build_url(self) -> str:
         params = {
@@ -149,20 +185,19 @@ class VivoTTSClient:
             "vaid": self.app_id,
         }
 
-    def _synthesize_pcm_chunk(
+    def _stream_pcm_chunk(
         self,
         text: str,
         *,
         voice: str,
         speed: int,
         volume: int,
-    ) -> bytes:
+    ) -> Iterator[bytes]:
         ws = self._connection_factory(
             self._build_url(),
             header=self._headers(),
             timeout=30,
         )
-        pcm_parts: List[bytes] = []
         try:
             payload = {
                 "aue": 0,
@@ -188,10 +223,8 @@ class VivoTTSClient:
                 data = message.get("data") or {}
                 audio = data.get("audio")
                 if audio:
-                    pcm_parts.append(base64.b64decode(audio))
+                    yield base64.b64decode(audio)
                 if int(data.get("status", -1)) == 2:
                     break
         finally:
             ws.close()
-
-        return b"".join(pcm_parts)

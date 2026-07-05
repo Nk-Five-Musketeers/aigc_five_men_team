@@ -109,7 +109,7 @@ TTS Phase 4
 ### TTS Phase 2：交互与边界确认
 - [x] 仅朗读“拾忆”回复，老人消息不提供回听按钮
 - [x] 仅点击后播放，不在收到回复后自动朗读
-- [x] 默认音色 `yunye`，默认语速和音量均为 `50`
+- [x] 默认音色按用户最新确认调整为 `wanqing`，默认语速和音量均为 `50`
 - [x] 设置页开放语速和音量调节
 - [x] 第一版先按 Windows 双终端验收，结构兼顾 Android / Web
 - [x] 已提供 `APP_ID=2026594139`
@@ -132,3 +132,45 @@ TTS Phase 4
 - [x] 验证短回复、长回复切分、快速切换、停止、错误提示和代理未启动场景
 - [x] 完成 Windows Debug 构建验收
 - **Status:** implemented; pending live AppKey verification
+
+## 新任务：回忆图鉴视觉与体验升级
+
+### Goal
+把现有“回忆图鉴”从信息展示页面提升为项目亮点：形成适合老人观看与点击朗读、也便于家属浏览和补充信息的可听人生影集体验。第一阶段只做现状研究、视觉方向讨论和方案文档，不修改业务代码。
+
+### Current Phase
+Memory Album Phase 1
+
+### Memory Album Phase 1：现状研究与体验定位
+- [x] 恢复项目上下文与规划文档
+- [x] 定位回忆图鉴的数据模型、组合逻辑与主要 UI 入口
+- [ ] 细读当前图鉴页面结构与交互状态
+- [ ] 用浏览器可视化草图比较 2-3 种产品方向
+- [ ] 向用户逐项确认核心受众、主体验和首版边界
+- **Status:** in_progress
+
+### Memory Album Phase 2：设计方案
+- [ ] 输出推荐方向、页面层级、核心交互与视觉规范
+- [ ] 明确真实照片、视频、朗读、时间线和家庭补充问题的组合方式
+- [ ] 评估是否需要使用生成式图片补充纹理或空状态素材
+- [ ] 用户确认设计方案
+- **Status:** pending
+
+### Memory Album Phase 3：实施规划
+- [x] 根据确认后的设计拆分 Flutter 页面改造任务
+- [x] 明确测试范围与 Windows / Web 预览验收步骤
+- [x] 写入独立设计说明与实施计划文档
+- [x] 按测试驱动方式实施封面选择、统一阅读页、时间线和补充跳转
+- [x] 完成 Flutter 测试、静态分析与 Windows / Web 构建验收
+- [ ] 用户在真实 Web 预览或 Windows 应用中手动确认最终视觉效果
+- **Status:** implemented; pending manual visual review
+
+### Memory Album Phase 4：按验收反馈简化
+- [x] 移除图鉴内所有“家里人补充”提示和跳转卡片
+- [x] 将副标题固定为“慢慢翻，也慢慢听”
+- [x] 把阅读页改成单页影集：一张大图、一个标题、两句以内正文
+- [x] 图鉴朗读复用“陪伴”页 `VoiceOutputProvider` 和 `/api/tts/synthesize`
+- [x] 仅点击后朗读当前页；翻页、离开阅读页或打开时间线时停止播放
+- [x] 重新完成全量测试、Windows / Web 构建和静态资源探测
+- [ ] 在 `http://localhost:8092/` 完成真实页面人工验收
+- **Status:** implemented; pending manual visual review

@@ -180,3 +180,91 @@
   - 已安装 `websocket-client 1.9.0`。当前机器旧 pip 需要统一单次 HTTP 代理为 `http://127.0.0.1:7898`。
 - Remaining:
   - 当前会话没有有效 `VIVO_APP_KEY`，无法执行真实上游语音播放联调。需用实际密钥确认 TTS 权限、签名 Header 和 `vaid=APP_ID`。
+
+### Memory Album Phase 1：回忆图鉴体验升级调研
+- **Status:** in_progress
+- Actions taken:
+  - 读取 `brainstorming`、`frontend-design`、`imagegen` 与 `planning-with-files` 技能说明，本轮按“先设计讨论、后实施”的边界推进。
+  - 恢复现有规划文档，确认当前工作区位于 `main`，本地分支落后远端 3 个提交，暂不拉取也不修改业务代码。
+  - 定位 `MemoryAlbum` 模型、`MemoryAlbumRepository` 组合逻辑与 `home_screen.dart` 中的图鉴页面入口。
+  - 确认现有图鉴已覆盖章节、时间线、照片、视频、家庭提问与逐句朗读段落，不需要从零设计。
+  - 用户已同意开启浏览器可视化对照稿；已将 `.superpowers/` 加入 `.gitignore`，避免本地草图进入版本控制。
+- Next:
+  - 细读当前页面布局与状态切换。
+  - 启动可视化草图服务，展示 2-3 种图鉴主体验方向。
+  - 逐项确认核心受众、主体验和首版边界。
+- UI review update:
+  - 已确认当前图鉴分为横向照片翻页与纵向听故事两个模式。
+  - 已记录主要问题：能力丰富但体验割裂；默认模式缺少章节叙事，朗读模式仍以统一卡片堆叠为主。
+  - 下一步将围绕“把两个模式合并为一本可听影集”制作视觉方向草图。
+- Visual direction decision:
+  - 已在本地浏览器草图页展示 A“可听的人生影集”、B“人生时间轴”、C“家庭共编档案”三个方向。
+  - 用户确认以 A 为主体，并吸收 B 和 C 的优点。
+  - 下一步确认核心受众优先级，再细化首页布局与朗读交互。
+- Audience decision:
+  - 用户确认第一优先服务老人本人。
+  - 设计约束收敛为：大照片、少操作、明显的一键朗读；家属协作和资料补全退居次级入口。
+- Entry decision:
+  - 用户确认保留影集封面仪式感。
+  - 打开图鉴后先展示真实照片封面、老人姓名和简短副标题，再通过明显按钮进入故事。
+- Cover decision:
+  - 用户确认封面优先使用重点照片，其次家庭照片，最后回退头像。
+  - 实施阶段需要调整当前头像优先的封面选择逻辑。
+- Family contribution decision:
+  - 用户认可轻量家庭共编：图鉴内只展示待补充提示，点击后跳转既有数据预录入模块。
+  - 首版不在图鉴内新增编辑表单，保持观看体验纯粹并控制实现规模。
+- Implementation kickoff:
+  - 用户批准开始实施。
+  - 新增设计说明 `docs/superpowers/specs/2026-05-31-memory-album-experience.md`。
+  - 新增实施计划 `docs/superpowers/plans/2026-05-31-memory-album-experience.md`。
+  - 本轮沿用用户此前明确批准的 `main` 分支原地开发，不创建额外 worktree。
+- Implementation result:
+  - 使用测试驱动方式调整封面照片顺序：重点照片、家庭照片、普通非头像照片、头像兜底。
+  - 新增影集封面，提供“开始听故事”和“先翻一翻”。
+  - 将已有逐句朗读页面作为统一阅读页，加入章节导航条，移除不再需要的朗读状态卡。
+  - 新增人生时间线页和轻量家庭补充提示，补充入口跳转既有数据预录入模块。
+  - 修正预录入返回来源：从图鉴进入后可以返回图鉴。
+  - 调试基线测试时发现 Flutter 与 Python 默认音色约定需要统一；用户最新确认使用 `wanqing`，已同步 Flutter Provider、Flutter TTS 仓库接口、Python 默认值、测试与 README。
+- Verification:
+  - `flutter test`：53 项全部通过。
+  - `dart analyze`：仅剩 11 条仓库既有提示，本轮新增警告已清理。
+  - `flutter build windows --debug`：通过，生成 `build\windows\x64\runner\Debug\aigc_five_men_team.exe`。
+  - `flutter build web --debug`：通过，生成 `build\web`。
+  - 实际 Flutter Web 预览服务：`http://localhost:8092`。入口、`flutter_bootstrap.js`、`main.dart.js` 均返回 HTTP 200。
+  - 内置浏览器自动接管仍然超时，本机无备用 Playwright 模块；需要用户在真实预览中手动确认最终视觉效果。
+- Voice selection correction:
+  - 用户最新确认默认朗读音色需要使用 `wanqing`。
+  - 已统一更新 Flutter `VoiceOutputProvider`、Flutter `TtsSynthesizer` / `TtsRepository`、Python `DEFAULT_VOICE`、默认行为测试与 README。
+  - 显式指定 `yunye` 的底层 WebSocket 协议测试仍然保留，用于确认调用者可以覆盖默认音色。
+  - `python -B -m unittest server.test_speech_synthesis server.test_tts_http -v`：8 项通过。
+  - `flutter test`：53 项全部通过。
+  - `dart analyze`：仍仅为 11 条仓库既有提示。
+  - `flutter build web --debug`：重新构建通过；`http://localhost:8092` 的入口、`flutter_bootstrap.js`、`main.dart.js` 均返回 HTTP 200。
+
+### Memory Album Phase 4：按验收反馈简化
+- **Status:** implementation complete; verification in progress
+- Confirmed:
+  - 删除图鉴内全部“家里人补充”提示。
+  - 图鉴副标题固定为“慢慢翻，也慢慢听”。
+  - 朗读只作用于当前故事页，仅点击触发，不自动连续播放。
+  - 图鉴朗读复用陪伴页 `/api/tts/synthesize` 链路和 `wanqing` 音色。
+- Implemented:
+  - 新增 `lib/core/memory_album/memory_album_story_pages.dart`，筛选故事章节、限制正文两句并提供封面照片兜底。
+  - 将封面主按钮调整为“开始翻阅”，移除封面上的动态介绍和第二个入口。
+  - 将阅读页替换为单页影集：大图、章节、标题、时间地点、短正文和固定底栏。
+  - 底栏仅保留上一页、朗读当前故事、下一页；翻页、离页、刷新和进入时间线时停止当前播放。
+  - 时间线保留为只读二级页面，删除补充入口。
+  - 删除旧条目组件中残留的家庭补充卡片，避免后续误复用。
+- Verification so far:
+  - 新增测试先按预期失败：缺少 `memory_album_story_pages.dart`。
+  - `flutter test test\memory_album_story_pages_test.dart`：2 项通过。
+  - `flutter test test\memory_album_repository_test.dart`：7 项通过。
+  - 图鉴、仓库、朗读 Provider 和朗读 UI 聚焦测试：18 项全部通过。
+  - `git diff --check`：通过，仅显示 Windows 行尾提示。
+  - `python -B -m unittest server.test_speech_synthesis server.test_tts_http -v`：8 项全部通过。
+  - `flutter test`：55 项全部通过。
+  - `dart analyze`：无编译错误；剩余 14 条提示，其中 11 条为仓库既有提示，3 条为旧版不可达朗读组件的未引用警告。
+  - `flutter build windows --debug`：通过，生成 `build\windows\x64\runner\Debug\aigc_five_men_team.exe`。
+  - `flutter build web --debug`：通过，生成 `build\web`。
+  - `http://localhost:8092/`、`flutter_bootstrap.js` 与 `main.dart.js` 均返回 HTTP 200。
+  - 内置浏览器自动连接连续两次超时，无法完成截图级视觉验收。人工预览地址保持为 `http://localhost:8092/`。

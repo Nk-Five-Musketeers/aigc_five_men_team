@@ -136,6 +136,8 @@ void main() {
     );
 
     expect(album.albumTitle, '于小晨的回忆图鉴');
+    expect(album.albumSubtitle, '慢慢翻，也慢慢听');
+    expect(album.cover.subtitle, '慢慢翻，也慢慢听');
     expect(album.hasContent, isTrue);
     expect(
       album.chapters.any((chapter) => chapter.chapterType == 'photo_memory'),
@@ -173,6 +175,92 @@ void main() {
     expect(profileItem.content, contains('听戏'));
     expect(profileItem.content, isNot(contains('职业经历里，有')));
     expect(profileItem.content, isNot(contains('可以记着')));
+  });
+
+  test('compose prefers a favorite story photo over avatar for the cover', () {
+    final album = MemoryAlbumComposer.compose(
+      ownerUserId: 'elder_1',
+      user: {'name': '于小晨'},
+      familyMembers: const [],
+      memoryEvents: const [],
+      dailyLifeRecords: const [],
+      photos: [
+        ProfilePhotoModel(
+          id: 'avatar_001',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\avatar_001.jpg',
+          category: ProfilePhotoCategory.avatar,
+        ),
+        ProfilePhotoModel(
+          id: 'family_001',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\family_001.jpg',
+          category: ProfilePhotoCategory.family,
+        ),
+        ProfilePhotoModel(
+          id: 'favorite_memory_001',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\favorite_memory_001.jpg',
+          category: ProfilePhotoCategory.memory,
+          isFavorite: true,
+        ),
+      ],
+    );
+
+    expect(album.cover.recommendedCoverPhotoId, 'favorite_memory_001');
+  });
+
+  test('compose prefers a family photo over avatar when no favorite exists',
+      () {
+    final album = MemoryAlbumComposer.compose(
+      ownerUserId: 'elder_1',
+      user: {'name': '于小晨'},
+      familyMembers: const [],
+      memoryEvents: const [],
+      dailyLifeRecords: const [],
+      photos: [
+        ProfilePhotoModel(
+          id: 'avatar_001',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\avatar_001.jpg',
+          category: ProfilePhotoCategory.avatar,
+        ),
+        ProfilePhotoModel(
+          id: 'family_001',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\family_001.jpg',
+          category: ProfilePhotoCategory.family,
+        ),
+      ],
+    );
+
+    expect(album.cover.recommendedCoverPhotoId, 'family_001');
+  });
+
+  test('compose uses avatar only after other story photos are exhausted', () {
+    final album = MemoryAlbumComposer.compose(
+      ownerUserId: 'elder_1',
+      user: {'name': '于小晨'},
+      familyMembers: const [],
+      memoryEvents: const [],
+      dailyLifeRecords: const [],
+      photos: [
+        ProfilePhotoModel(
+          id: 'avatar_001',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\avatar_001.jpg',
+          category: ProfilePhotoCategory.avatar,
+        ),
+        ProfilePhotoModel(
+          id: 'memory_001',
+          ownerUserId: 'elder_1',
+          filePath: r'D:\app-data\memory_001.jpg',
+          category: ProfilePhotoCategory.memory,
+        ),
+      ],
+    );
+
+    expect(album.cover.recommendedCoverPhotoId, 'memory_001');
   });
 
   test('compose skips narration body for photos without story facts', () {

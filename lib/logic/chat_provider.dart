@@ -16,6 +16,7 @@ import '../core/voice_input/voice_input.dart';
 import 'profile_photo_reply.dart';
 import 'relation_extractor.dart';
 import 'prompt_task_router.dart';
+import 'support_card_policy.dart';
 import 'user_archive_cache.dart';
 import '../data/models/profile_photo.dart';
 import '../data/models/profile_video.dart';
@@ -46,6 +47,9 @@ class ChatProvider extends ChangeNotifier {
 
   bool _isSending = false;
   int _userTurnCount = 0;
+  int? _lastAnySupportCardTurn;
+  int? _lastMemoryPromptTurn;
+  int? _lastCognitivePromptTurn;
   String _lastUserText = '';
 
   /// 最近一次「看照片」检索原话；用于用户说「不是这张」时换批展示。
@@ -162,22 +166,48 @@ class ChatProvider extends ChangeNotifier {
       return;
     }
 
+    String? streamingAssistantId;
     try {
       final promptContext = await _buildPromptContextAsync(
         photoLookupNote: null,
       );
-      final reply = await _repository
-          .sendMessage(
-            history: _messages,
+      final historyForRequest = List<ChatMessage>.from(_messages);
+      final assistantMessage = _textMessage(content: '', isUser: false);
+      streamingAssistantId = assistantMessage.id;
+      _messages.add(assistantMessage);
+      notifyListeners();
+
+      final reply = StringBuffer();
+      await for (final delta in _repository
+          .streamMessage(
+            history: historyForRequest,
             promptContext: promptContext,
           )
-          .timeout(networkTimeout);
-      final assistantMessage = _textMessage(content: reply, isUser: false);
-      _messages.add(assistantMessage);
-      await _trySaveMessage(assistantMessage);
+          .timeout(networkTimeout)) {
+        reply.write(delta);
+        _replaceMessageContent(assistantMessage.id, reply.toString());
+        notifyListeners();
+      }
+
+      final finalReply = reply.toString().trim();
+      if (finalReply.isEmpty) {
+        _removeMessageByIdInMemory(assistantMessage.id);
+        throw StateError('empty streamed assistant reply');
+      }
+      final completedAssistantMessage = _replaceMessageContent(
+        assistantMessage.id,
+        finalReply,
+      );
+      if (completedAssistantMessage != null) {
+        await _trySaveMessage(completedAssistantMessage);
+      }
+      streamingAssistantId = null;
       await _extractRelationsFromRecentChat(sourceMessageId: userMessage.id);
       await _insertSupportCardIfNeeded(text);
     } catch (error) {
+      if (streamingAssistantId != null) {
+        _removeMessageByIdInMemory(streamingAssistantId);
+      }
       final errorMessage = ChatMessage(
         id: _newId('error'),
         content: _buildErrorMessage(error),
@@ -423,6 +453,7 @@ class ChatProvider extends ChangeNotifier {
     await LocalDatabase.deleteAllMessagesInConversation(_activeConversationId);
     _messages.clear();
     _userTurnCount = 0;
+    _resetSupportCardTurns();
     _clearPhotoBrowseSession();
     _clearVideoBrowseSession();
     final welcome = ChatMessage(
@@ -485,6 +516,33 @@ class ChatProvider extends ChangeNotifier {
       isUser: isUser,
       timestamp: DateTime.now(),
     );
+  }
+
+  ChatMessage? _replaceMessageContent(String messageId, String content) {
+    final index = _messages.indexWhere((m) => m.id == messageId);
+    if (index == -1) return null;
+    final old = _messages[index];
+    final updated = ChatMessage(
+      id: old.id,
+      content: content,
+      isUser: old.isUser,
+      timestamp: old.timestamp,
+      kind: old.kind,
+      title: old.title,
+      options: old.options,
+      cueLabel: old.cueLabel,
+      imagePath: old.imagePath,
+      profilePhotoId: old.profilePhotoId,
+      attachmentMediaType: old.attachmentMediaType,
+      videoPath: old.videoPath,
+      attachmentId: old.attachmentId,
+    );
+    _messages[index] = updated;
+    return updated;
+  }
+
+  void _removeMessageByIdInMemory(String messageId) {
+    _messages.removeWhere((m) => m.id == messageId);
   }
 
   ChatMessage _photoMessage(ProfilePhotoModel photo) {
@@ -620,8 +678,7 @@ class ChatProvider extends ChangeNotifier {
     if (videoReply.status == ProfileVideoReplyStatus.matched) {
       try {
         await _emitProfileVideos(videoReply.videos);
-        _shownVideoIdsForActiveQuery
-            .addAll(videoReply.videos.map((v) => v.id));
+        _shownVideoIdsForActiveQuery.addAll(videoReply.videos.map((v) => v.id));
         await _extractRelationsFromRecentChat(sourceMessageId: userMessageId);
       } finally {
         _isSending = false;
@@ -630,8 +687,7 @@ class ChatProvider extends ChangeNotifier {
       return;
     }
 
-    if (isRejection &&
-        videoReply.status == ProfileVideoReplyStatus.exhausted) {
+    if (isRejection && videoReply.status == ProfileVideoReplyStatus.exhausted) {
       await _emitAssistantReplyAndFinish(
         content: '相关视频都给您看过了。您可以说想看哪一类，比如「家庭视频」。',
         sourceMessageId: userMessageId,
@@ -686,8 +742,7 @@ class ChatProvider extends ChangeNotifier {
     if (photoReply.status == ProfilePhotoReplyStatus.matched) {
       try {
         await _emitProfilePhotos(photoReply.photos);
-        _shownPhotoIdsForActiveQuery
-            .addAll(photoReply.photos.map((p) => p.id));
+        _shownPhotoIdsForActiveQuery.addAll(photoReply.photos.map((p) => p.id));
         await _extractRelationsFromRecentChat(sourceMessageId: userMessageId);
       } finally {
         _isSending = false;
@@ -696,8 +751,7 @@ class ChatProvider extends ChangeNotifier {
       return;
     }
 
-    if (isRejection &&
-        photoReply.status == ProfilePhotoReplyStatus.exhausted) {
+    if (isRejection && photoReply.status == ProfilePhotoReplyStatus.exhausted) {
       await _emitAssistantReplyAndFinish(
         content: '相关照片都给您看过了。您可以说要看哪一类，比如「家庭照片」或家里人名字。',
         sourceMessageId: userMessageId,
@@ -713,7 +767,12 @@ class ChatProvider extends ChangeNotifier {
   }
 
   Future<void> _insertSupportCardIfNeeded(String latestUserText) async {
-    if (_userTurnCount % 3 == 0) {
+    if (SupportCardPolicy.shouldShowCognitivePrompt(
+      latestUserText: latestUserText,
+      userTurnCount: _userTurnCount,
+      lastAnyPromptTurn: _lastAnySupportCardTurn,
+      lastCognitivePromptTurn: _lastCognitivePromptTurn,
+    )) {
       final card = ChatMessage(
         id: _newId('cognitive'),
         title: '小小回忆练习',
@@ -725,11 +784,17 @@ class ChatProvider extends ChangeNotifier {
         options: const <String>['水缸', '自行车', '再想想'],
       );
       _messages.add(card);
+      _recordSupportCardInserted(card.kind);
       await _trySaveMessage(card);
       return;
     }
 
-    if (_mentionsMemory(latestUserText) || _userTurnCount % 2 == 0) {
+    if (SupportCardPolicy.shouldShowMemoryPrompt(
+      latestUserText: latestUserText,
+      userTurnCount: _userTurnCount,
+      lastAnyPromptTurn: _lastAnySupportCardTurn,
+      lastMemoryPromptTurn: _lastMemoryPromptTurn,
+    )) {
       final card = ChatMessage(
         id: _newId('memory'),
         title: '记忆锚点',
@@ -741,12 +806,22 @@ class ChatProvider extends ChangeNotifier {
         options: const <String>['有点冷', '不太冷', '记不清了'],
       );
       _messages.add(card);
+      _recordSupportCardInserted(card.kind);
       await _trySaveMessage(card);
     }
   }
 
   Future<void> _insertLocalMemoryPrompt(String latestUserText) async {
     if (!_mentionsMemory(latestUserText)) return;
+    if (!SupportCardPolicy.shouldShowMemoryPrompt(
+      latestUserText: latestUserText,
+      userTurnCount: _userTurnCount,
+      lastAnyPromptTurn: _lastAnySupportCardTurn,
+      lastMemoryPromptTurn: _lastMemoryPromptTurn,
+      allowAmbient: false,
+    )) {
+      return;
+    }
     final memoryPrompt = ChatMessage(
       id: _newId('local-memory'),
       title: '我们慢慢回忆',
@@ -758,17 +833,25 @@ class ChatProvider extends ChangeNotifier {
       options: const <String>['好呀', '想看照片', '再等等'],
     );
     _messages.add(memoryPrompt);
+    _recordSupportCardInserted(memoryPrompt.kind);
     await _trySaveMessage(memoryPrompt);
   }
 
   bool _mentionsMemory(String text) {
-    return text.contains('以前') ||
-        text.contains('照片') ||
-        text.contains('女儿') ||
-        text.contains('上班') ||
-        text.contains('老家') ||
-        text.contains('自行车') ||
-        text.contains('记得');
+    return PromptTaskRouter.hasMemoryIntent(text);
+  }
+
+  void _recordSupportCardInserted(ChatMessageKind kind) {
+    if (kind != ChatMessageKind.memoryPrompt &&
+        kind != ChatMessageKind.cognitivePrompt) {
+      return;
+    }
+    _lastAnySupportCardTurn = _userTurnCount;
+    if (kind == ChatMessageKind.memoryPrompt) {
+      _lastMemoryPromptTurn = _userTurnCount;
+    } else {
+      _lastCognitivePromptTurn = _userTurnCount;
+    }
   }
 
   /// 与 `server/prompts` v1.1 对齐；通过 PromptTaskRouter 决定 active_task。
@@ -894,7 +977,7 @@ class ChatProvider extends ChangeNotifier {
     _messages
       ..clear()
       ..addAll(rows.map(_chatMessageFromRow));
-    _userTurnCount = _messages.where((m) => m.isUser).length;
+    _restoreSupportCardTurnsFromHistory();
 
     if (_messages.isEmpty) {
       final welcome = ChatMessage(
@@ -906,6 +989,30 @@ class ChatProvider extends ChangeNotifier {
       _messages.add(welcome);
       await _trySaveMessage(welcome);
     }
+  }
+
+  void _restoreSupportCardTurnsFromHistory() {
+    var userTurns = 0;
+    _resetSupportCardTurns();
+    for (final message in _messages) {
+      if (message.isUser) {
+        userTurns++;
+      }
+      if (message.kind == ChatMessageKind.memoryPrompt) {
+        _lastAnySupportCardTurn = userTurns;
+        _lastMemoryPromptTurn = userTurns;
+      } else if (message.kind == ChatMessageKind.cognitivePrompt) {
+        _lastAnySupportCardTurn = userTurns;
+        _lastCognitivePromptTurn = userTurns;
+      }
+    }
+    _userTurnCount = userTurns;
+  }
+
+  void _resetSupportCardTurns() {
+    _lastAnySupportCardTurn = null;
+    _lastMemoryPromptTurn = null;
+    _lastCognitivePromptTurn = null;
   }
 
   Future<void> _reloadPendingConflicts() async {
@@ -1032,10 +1139,10 @@ class ChatProvider extends ChangeNotifier {
     return recent.map((m) {
       var content = m.content;
       if (m.kind == ChatMessageKind.attachment) {
-        final mediaLabel = m.attachmentMediaType ==
-                ChatAttachmentMediaType.video
-            ? '视频'
-            : '照片';
+        final mediaLabel =
+            m.attachmentMediaType == ChatAttachmentMediaType.video
+                ? '视频'
+                : '照片';
         content = '[上传了$mediaLabel] $content';
       }
       return <String, String>{

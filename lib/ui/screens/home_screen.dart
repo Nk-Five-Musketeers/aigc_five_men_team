@@ -3,12 +3,12 @@ import 'dart:io' show File;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/services/chat_attachment_service.dart';
 import '../../ui/widgets/media_viewer.dart';
 import '../../config/theme.dart';
+import '../../core/memory_album/memory_album_story_pages.dart';
 import '../../core/narration/narration_player.dart';
 import '../../core/utils/caption_text.dart';
 import '../../core/voice_input/voice_input.dart';
@@ -19,6 +19,7 @@ import '../../data/models/relation_conflict_record.dart';
 import '../../data/local_db/local_database.dart';
 import '../../data/repositories/memory_album_repository.dart';
 import '../../logic/chat_provider.dart';
+import '../../logic/voice_output_provider.dart';
 import 'data_preentry_screen.dart';
 import '../widgets/chat_read_aloud_action.dart';
 import '../widgets/read_aloud_settings_controls.dart';
@@ -58,6 +59,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _speechEngine = 'vivo';
 
   int _memoryRefreshToken = 0;
+  _AppView _preEntryReturnView = _AppView.settings;
 
   /// 已选但未发送的附件（需点「发送」才进入对话）。
   PickedChatAttachment? _pendingAttachment;
@@ -84,6 +86,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _showView(_AppView view) {
     setState(() => _view = view);
+  }
+
+  void _openPreEntryFrom(_AppView returnView) {
+    setState(() {
+      _preEntryReturnView = returnView;
+      _view = _AppView.preEntry;
+    });
   }
 
   Future<void> _onSendTap() async {
@@ -135,12 +144,14 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 12),
                 ListTile(
-                  leading: const Icon(Icons.photo_outlined, color: AppTheme.primaryDeep),
+                  leading: const Icon(Icons.photo_outlined,
+                      color: AppTheme.primaryDeep),
                   title: const Text('选择照片', style: TextStyle(fontSize: 20)),
                   onTap: () => Navigator.pop(context, 'image'),
                 ),
                 ListTile(
-                  leading: const Icon(Icons.videocam_outlined, color: AppTheme.primaryDeep),
+                  leading: const Icon(Icons.videocam_outlined,
+                      color: AppTheme.primaryDeep),
                   title: const Text('选择视频', style: TextStyle(fontSize: 20)),
                   onTap: () => Navigator.pop(context, 'video'),
                 ),
@@ -449,7 +460,7 @@ class _HomeScreenState extends State<HomeScreen> {
           speechEngine: _speechEngine,
           networkOnline: _networkOnline,
           onBack: () => _showView(_AppView.home),
-          onPreEntryTap: () => _showView(_AppView.preEntry),
+          onPreEntryTap: () => _openPreEntryFrom(_AppView.settings),
           onModeSelected: (value) => setState(() => _speechMode = value),
           onEngineSelected: (value) => setState(() => _speechEngine = value),
           onNetworkTap: () => setState(() => _networkOnline = !_networkOnline),
@@ -460,7 +471,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ownerUserId: chat.activeUserId,
           onBack: () {
             _onPreEntryDataChanged();
-            _showView(_AppView.settings);
+            _showView(_preEntryReturnView);
           },
           onDataChanged: _onPreEntryDataChanged,
         );
@@ -913,7 +924,8 @@ class _ChatAttachmentBubble extends StatelessWidget {
               child: TappableMediaThumbnail(
                 path: isVideo ? message.videoPath! : message.imagePath!,
                 isVideo: isVideo,
-                title: message.content.trim().isNotEmpty ? message.content : null,
+                title:
+                    message.content.trim().isNotEmpty ? message.content : null,
                 child: isVideo
                     ? _MemoryVideoPreview(path: message.videoPath!)
                     : _MemoryPhotoImage(
@@ -975,7 +987,9 @@ class _ChatPhotoBubble extends StatelessWidget {
                 child: TappableMediaThumbnail(
                   path: path,
                   isVideo: false,
-                  title: message.content.trim().isNotEmpty ? message.content : null,
+                  title: message.content.trim().isNotEmpty
+                      ? message.content
+                      : null,
                   child: _MemoryPhotoImage(
                     photo: ProfilePhotoModel(
                       id: message.profilePhotoId ?? message.id,
@@ -1220,50 +1234,51 @@ class _MemoryBookView extends StatefulWidget {
   State<_MemoryBookView> createState() => _MemoryBookViewState();
 }
 
-enum _MemoryViewMode { wall, narration }
+enum _MemoryViewMode { cover, reading, timeline }
 
 class _MemoryBookViewState extends State<_MemoryBookView> {
   late Future<MemoryAlbumDraft> _future;
   final MemoryAlbumRepository _repository = MemoryAlbumRepository();
-  late final NarrationPlayer _narrationPlayer;
-  final ScrollController _scrollController = ScrollController();
-  final Map<String, GlobalKey> _segmentKeys = <String, GlobalKey>{};
-  final Map<String, GlobalKey> _itemKeys = <String, GlobalKey>{};
-  DateTime? _lastUserScrollAt;
-  _MemoryViewMode _mode = _MemoryViewMode.wall;
+  final PageController _pageController = PageController();
+  VoiceOutputProvider? _voiceOutput;
+  _MemoryViewMode _mode = _MemoryViewMode.cover;
+  int _currentPageIndex = 0;
 
   @override
   void initState() {
     super.initState();
-    _narrationPlayer = NarrationPlayer()..addListener(_onNarrationChanged);
     _future = _load();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _voiceOutput ??= context.read<VoiceOutputProvider>();
   }
 
   @override
   void didUpdateWidget(_MemoryBookView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.ownerUserId != widget.ownerUserId) {
-      setState(() => _future = _load());
+      unawaited(_stopReadAloud());
+      setState(() {
+        _mode = _MemoryViewMode.cover;
+        _currentPageIndex = 0;
+        _future = _load();
+      });
+      _resetReader();
     }
   }
 
   @override
   void dispose() {
-    _narrationPlayer.removeListener(_onNarrationChanged);
-    _narrationPlayer.dispose();
-    _scrollController.dispose();
+    unawaited(_voiceOutput?.stop() ?? Future<void>.value());
+    _pageController.dispose();
     super.dispose();
   }
 
-  Future<MemoryAlbumDraft> _load() async {
-    final draft = await _repository.buildForUser(widget.ownerUserId);
-    if (mounted) {
-      _segmentKeys.clear();
-      _itemKeys.clear();
-      _narrationPlayer.setSegments(draft.album.narration.segments);
-    }
-    return draft;
-  }
+  Future<MemoryAlbumDraft> _load() =>
+      _repository.buildForUser(widget.ownerUserId);
 
   @override
   Widget build(BuildContext context) {
@@ -1275,6 +1290,7 @@ class _MemoryBookViewState extends State<_MemoryBookView> {
         }
         final draft = snapshot.data!;
         final album = draft.album;
+        final pages = buildMemoryAlbumStoryPages(album);
         if (!album.hasContent) {
           return ListView(
             padding: const EdgeInsets.only(bottom: 14),
@@ -1288,179 +1304,130 @@ class _MemoryBookViewState extends State<_MemoryBookView> {
             ],
           );
         }
-        if (_mode == _MemoryViewMode.narration) {
-          return _buildNarrationMode(draft);
+        if (_mode == _MemoryViewMode.cover) {
+          return _MemoryAlbumCover(
+            draft: draft,
+            onBack: widget.onBack,
+            onStartReading: _enterReadingMode,
+          );
         }
-        return _PhotoBookView(
-          draft: draft,
-          onListen: _enterNarrationMode,
-          onRefresh: _refresh,
-        );
+        if (_mode == _MemoryViewMode.timeline) {
+          return _AlbumTimelineView(
+            album: album,
+            photosById: draft.photosById,
+            onBack: _exitTimelineMode,
+          );
+        }
+        if (_mode == _MemoryViewMode.reading) {
+          return _buildReadingMode(draft, pages);
+        }
+        return const SizedBox.shrink();
       },
     );
   }
 
-  void _enterNarrationMode() {
-    setState(() => _mode = _MemoryViewMode.narration);
+  void _enterReadingMode() {
+    setState(() => _mode = _MemoryViewMode.reading);
   }
 
-  void _exitNarrationMode() {
-    _narrationPlayer.stop();
-    setState(() => _mode = _MemoryViewMode.wall);
+  void _exitReadingMode() {
+    unawaited(_stopReadAloud());
+    setState(() => _mode = _MemoryViewMode.cover);
   }
 
-  Widget _buildNarrationMode(MemoryAlbumDraft draft) {
+  void _enterTimelineMode() {
+    unawaited(_stopReadAloud());
+    setState(() => _mode = _MemoryViewMode.timeline);
+  }
+
+  void _exitTimelineMode() {
+    setState(() => _mode = _MemoryViewMode.reading);
+  }
+
+  Widget _buildReadingMode(
+    MemoryAlbumDraft draft,
+    List<MemoryAlbumStoryPage> pages,
+  ) {
     final album = draft.album;
-    final photosById = draft.photosById;
     return Column(
       children: [
-        _NarrationModeHeader(onBack: _exitNarrationMode),
-        Expanded(
-          child: NotificationListener<ScrollNotification>(
-            onNotification: _handleScrollNotification,
-            child: ListView(
-              controller: _scrollController,
-              padding: const EdgeInsets.only(bottom: 14),
-              children: [
-                _NarrationStatusPanel(
-                  album: album,
-                  state: _narrationPlayer.state,
-                  currentSegment: _narrationPlayer.currentSegment,
-                ),
-                _AlbumProfilePanel(
-                  card: album.elderProfileCard,
-                  narrationPlayer: _narrationPlayer,
-                  keyForSegment: _keyForSegment,
-                  keyForItem: _keyForItem,
-                  onSegmentTap: _playFromSegment,
-                ),
-                for (final chapter in album.chapters)
-                  _AlbumChapterPanel(
-                    chapter: chapter,
-                    photosById: photosById,
-                    narrationPlayer: _narrationPlayer,
-                    keyForSegment: _keyForSegment,
-                    keyForItem: _keyForItem,
-                    onSegmentTap: _playFromSegment,
-                  ),
-                if (album.familyQuestions.isNotEmpty)
-                  _AlbumQuestionsPanel(questions: album.familyQuestions),
-              ],
-            ),
-          ),
+        _NarrationModeHeader(
+          albumTitle: album.albumTitle,
+          onBack: _exitReadingMode,
+          onTimeline: _enterTimelineMode,
+          onRefresh: _refresh,
         ),
-        _NarrationControlBar(
-          player: _narrationPlayer,
-          onPreviousPage: _previousPage,
-          onNextPage: _nextPage,
+        Expanded(
+          child: _AlbumSinglePageReader(
+            pages: pages,
+            photosById: draft.photosById,
+            pageController: _pageController,
+            currentPageIndex: _currentPageIndex,
+            onPageChanged: _onPageChanged,
+            onToggleReadAloud: _toggleReadAloud,
+            onPreviousPage: _previousPage,
+            onNextPage: () => _nextPage(pages.length),
+          ),
         ),
       ],
     );
   }
 
   void _refresh() {
-    _narrationPlayer.stop();
-    setState(() => _future = _load());
-  }
-
-  bool _handleScrollNotification(ScrollNotification notification) {
-    if (notification is ScrollUpdateNotification &&
-        notification.dragDetails != null) {
-      _lastUserScrollAt = DateTime.now();
-    }
-    if (notification is UserScrollNotification) {
-      _lastUserScrollAt = DateTime.now();
-    }
-    return false;
-  }
-
-  GlobalKey _keyForSegment(String segmentId) {
-    return _segmentKeys.putIfAbsent(segmentId, () => GlobalKey());
-  }
-
-  GlobalKey _keyForItem(String itemId) {
-    return _itemKeys.putIfAbsent(itemId, () => GlobalKey());
-  }
-
-  Future<void> _playFromSegment(int index) async {
-    _lastUserScrollAt = null;
-    await _narrationPlayer.playFromSegment(index);
-  }
-
-  void _onNarrationChanged() {
-    if (!mounted) return;
-    setState(() {});
-    _autoScrollToCurrentSegment();
-  }
-
-  void _autoScrollToCurrentSegment() {
-    final segment = _narrationPlayer.currentSegment;
-    if (segment == null) return;
-    final lastScroll = _lastUserScrollAt;
-    if (lastScroll != null &&
-        DateTime.now().difference(lastScroll) < const Duration(seconds: 3)) {
-      return;
-    }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final segmentContext = _segmentKeys[segment.segmentId]?.currentContext;
-      final itemContext = _itemKeys[segment.itemId]?.currentContext;
-      final contextToReveal = segmentContext ?? itemContext;
-      if (contextToReveal == null) return;
-      final renderObject = contextToReveal.findRenderObject();
-      final viewport = renderObject == null
-          ? null
-          : RenderAbstractViewport.maybeOf(renderObject);
-      if (renderObject != null &&
-          viewport != null &&
-          _scrollController.hasClients) {
-        final position = _scrollController.position;
-        final targetTop = viewport.getOffsetToReveal(renderObject, 0).offset;
-        final targetBottom =
-            viewport.getOffsetToReveal(renderObject, 1).offset +
-                position.viewportDimension;
-        final visibleTop = position.pixels;
-        final visibleBottom = visibleTop + position.viewportDimension;
-        const comfortMargin = 88.0;
-        final comfortablyVisible = targetTop >= visibleTop + comfortMargin &&
-            targetBottom <= visibleBottom - comfortMargin;
-        if (comfortablyVisible) return;
-      }
-      Scrollable.ensureVisible(
-        contextToReveal,
-        duration: const Duration(milliseconds: 420),
-        curve: Curves.easeOutCubic,
-        alignment: 0.32,
-      );
+    unawaited(_stopReadAloud());
+    setState(() {
+      _mode = _MemoryViewMode.cover;
+      _currentPageIndex = 0;
+      _future = _load();
     });
+    _resetReader();
   }
 
-  Future<void> _previousPage() async {
-    final currentPage = _narrationPlayer.state.currentPageIndex;
-    final segments = _narrationPlayer.segments;
-    for (var i = _narrationPlayer.state.currentSegmentIndex - 1; i >= 0; i--) {
-      if (segments[i].pageIndex < currentPage) {
-        await _playFromSegment(i);
-        return;
-      }
-    }
-    await _playFromSegment(0);
+  void _onPageChanged(int index) {
+    unawaited(_stopReadAloud());
+    setState(() => _currentPageIndex = index);
   }
 
-  Future<void> _nextPage() async {
-    final currentPage = _narrationPlayer.state.currentPageIndex;
-    final segments = _narrationPlayer.segments;
-    for (var i = _narrationPlayer.state.currentSegmentIndex + 1;
-        i < segments.length;
-        i++) {
-      if (segments[i].pageIndex > currentPage) {
-        await _playFromSegment(i);
-        return;
+  void _previousPage() {
+    if (_currentPageIndex == 0) return;
+    _pageController.previousPage(
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  void _nextPage(int total) {
+    if (_currentPageIndex >= total - 1) return;
+    _pageController.nextPage(
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  Future<void> _toggleReadAloud(MemoryAlbumStoryPage page) async {
+    try {
+      await context.read<VoiceOutputProvider>().toggleReadAloud(
+            messageId: _messageId(page),
+            text: page.narrationText,
+          );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text('暂时无法朗读：$error')),
+      );
+    }
+  }
+
+  Future<void> _stopReadAloud() async {
+    await (_voiceOutput ?? context.read<VoiceOutputProvider>()).stop();
+  }
+
+  void _resetReader() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _pageController.hasClients) {
+        _pageController.jumpToPage(0);
       }
-    }
-    if (segments.isNotEmpty) {
-      await _playFromSegment(segments.length - 1);
-    }
+    });
   }
 }
 
@@ -1520,10 +1487,177 @@ class _MemoryAlbumHeader extends StatelessWidget {
   }
 }
 
-class _NarrationModeHeader extends StatelessWidget {
-  const _NarrationModeHeader({required this.onBack});
+class _MemoryAlbumCover extends StatelessWidget {
+  const _MemoryAlbumCover({
+    required this.draft,
+    required this.onBack,
+    required this.onStartReading,
+  });
 
+  final MemoryAlbumDraft draft;
   final VoidCallback onBack;
+  final VoidCallback onStartReading;
+
+  @override
+  Widget build(BuildContext context) {
+    final album = draft.album;
+    final coverPhoto = draft.photosById[album.cover.recommendedCoverPhotoId];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(0, 4, 0, 8),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: '返回',
+                onPressed: onBack,
+                icon: const Icon(Icons.arrow_back_rounded),
+              ),
+              const Expanded(
+                child: Text(
+                  '回忆图鉴',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.text,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 48),
+            ],
+          ),
+        ),
+        Expanded(
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              color: AppTheme.primaryDeep,
+              borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+            ),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (coverPhoto != null)
+                  _MemoryPhotoImage(
+                    photo: coverPhoto,
+                    interactive: false,
+                  )
+                else
+                  const _MemoryAlbumCoverFallback(),
+                const DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Color(0x1424322E),
+                        Color(0x3324322E),
+                        Color(0xE623322E),
+                      ],
+                      stops: [0.2, 0.54, 1],
+                    ),
+                  ),
+                ),
+                Align(
+                  alignment: Alignment.bottomLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '为${album.cover.title}整理的人生影集',
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          album.albumTitle,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 31,
+                            height: 1.16,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          memoryAlbumSubtitle,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 19,
+                            height: 1.4,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        FilledButton.icon(
+                          onPressed: onStartReading,
+                          style: FilledButton.styleFrom(
+                            foregroundColor: AppTheme.primaryDeep,
+                            backgroundColor: Colors.white,
+                            minimumSize: const Size.fromHeight(52),
+                          ),
+                          icon:
+                              const Icon(Icons.auto_stories_rounded, size: 25),
+                          label: const Text(
+                            '开始翻阅',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _MemoryAlbumCoverFallback extends StatelessWidget {
+  const _MemoryAlbumCoverFallback();
+
+  @override
+  Widget build(BuildContext context) {
+    return const ColoredBox(
+      color: AppTheme.primaryDeep,
+      child: Center(
+        child: Icon(
+          Icons.auto_stories_rounded,
+          color: Colors.white70,
+          size: 92,
+        ),
+      ),
+    );
+  }
+}
+
+class _NarrationModeHeader extends StatelessWidget {
+  const _NarrationModeHeader({
+    required this.albumTitle,
+    required this.onBack,
+    required this.onTimeline,
+    required this.onRefresh,
+  });
+
+  final String albumTitle;
+  final VoidCallback onBack;
+  final VoidCallback onTimeline;
+  final VoidCallback onRefresh;
 
   @override
   Widget build(BuildContext context) {
@@ -1541,14 +1675,14 @@ class _NarrationModeHeader extends StatelessWidget {
             icon: const Icon(Icons.arrow_back_rounded),
           ),
           const SizedBox(width: 2),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '听故事模式',
+                  albumTitle,
                   style: TextStyle(
-                    fontSize: 24,
+                    fontSize: 21,
                     fontWeight: FontWeight.w700,
                     color: AppTheme.text,
                     height: 1.2,
@@ -1556,14 +1690,445 @@ class _NarrationModeHeader extends StatelessWidget {
                 ),
                 SizedBox(height: 2),
                 Text(
-                  'AI 把这本图鉴整理成一段段故事',
+                  '慢慢翻，也慢慢听',
                   style: TextStyle(
-                    fontSize: 17,
+                    fontSize: 16,
                     fontWeight: FontWeight.w400,
                     color: AppTheme.textSoft,
                   ),
                 ),
               ],
+            ),
+          ),
+          IconButton(
+            tooltip: '人生时间线',
+            onPressed: onTimeline,
+            icon: const Icon(Icons.history_rounded),
+          ),
+          IconButton(
+            tooltip: '刷新',
+            onPressed: onRefresh,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlbumSinglePageReader extends StatelessWidget {
+  const _AlbumSinglePageReader({
+    required this.pages,
+    required this.photosById,
+    required this.pageController,
+    required this.currentPageIndex,
+    required this.onPageChanged,
+    required this.onToggleReadAloud,
+    required this.onPreviousPage,
+    required this.onNextPage,
+  });
+
+  final List<MemoryAlbumStoryPage> pages;
+  final Map<String, ProfilePhotoModel> photosById;
+  final PageController pageController;
+  final int currentPageIndex;
+  final ValueChanged<int> onPageChanged;
+  final Future<void> Function(MemoryAlbumStoryPage page) onToggleReadAloud;
+  final VoidCallback onPreviousPage;
+  final VoidCallback onNextPage;
+
+  @override
+  Widget build(BuildContext context) {
+    if (pages.isEmpty) {
+      return const _EmptyHint(
+        title: '图鉴正在等待第一段故事',
+        hint: '录入一段重要经历，或为一张照片写下故事后，就可以在这里慢慢翻阅',
+      );
+    }
+    final safeIndex = currentPageIndex.clamp(0, pages.length - 1);
+    final currentPage = pages[safeIndex];
+    return Column(
+      children: [
+        Expanded(
+          child: PageView.builder(
+            controller: pageController,
+            itemCount: pages.length,
+            onPageChanged: onPageChanged,
+            itemBuilder: (context, index) {
+              final page = pages[index];
+              return _AlbumStoryPageView(
+                page: page,
+                photo: photosById[page.photoId],
+              );
+            },
+          ),
+        ),
+        _AlbumStoryControlBar(
+          page: currentPage,
+          currentPageIndex: safeIndex,
+          totalPages: pages.length,
+          onToggleReadAloud: onToggleReadAloud,
+          onPreviousPage: safeIndex > 0 ? onPreviousPage : null,
+          onNextPage: safeIndex < pages.length - 1 ? onNextPage : null,
+        ),
+      ],
+    );
+  }
+}
+
+class _AlbumStoryPageView extends StatelessWidget {
+  const _AlbumStoryPageView({
+    required this.page,
+    required this.photo,
+  });
+
+  final MemoryAlbumStoryPage page;
+  final ProfilePhotoModel? photo;
+
+  @override
+  Widget build(BuildContext context) {
+    final photoMeta = [
+      photo?.photoTime?.trim() ?? '',
+      photo?.location?.trim() ?? '',
+    ].where((part) => part.isNotEmpty).join(' · ');
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(4, 8, 4, 14),
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+          child: AspectRatio(
+            aspectRatio: 1.18,
+            child: photo == null
+                ? const _AlbumStoryPhotoFallback()
+                : _MemoryPhotoImage(
+                    photo: photo!,
+                    interactive: false,
+                  ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          page.chapterTitle,
+          style: const TextStyle(
+            color: AppTheme.primary,
+            fontSize: 15,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 7),
+        Text(
+          page.title,
+          style: const TextStyle(
+            color: AppTheme.text,
+            fontSize: 25,
+            height: 1.2,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        if (photoMeta.isNotEmpty) ...[
+          const SizedBox(height: 7),
+          Text(
+            photoMeta,
+            style: const TextStyle(
+              color: AppTheme.textSoft,
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+        const SizedBox(height: 12),
+        Text(
+          page.body,
+          style: const TextStyle(
+            color: AppTheme.text,
+            fontSize: 19,
+            height: 1.65,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _AlbumStoryPhotoFallback extends StatelessWidget {
+  const _AlbumStoryPhotoFallback();
+
+  @override
+  Widget build(BuildContext context) {
+    return const ColoredBox(
+      color: AppTheme.surface2,
+      child: Center(
+        child: Icon(
+          Icons.photo_library_outlined,
+          color: AppTheme.primary,
+          size: 72,
+        ),
+      ),
+    );
+  }
+}
+
+class _AlbumStoryControlBar extends StatelessWidget {
+  const _AlbumStoryControlBar({
+    required this.page,
+    required this.currentPageIndex,
+    required this.totalPages,
+    required this.onToggleReadAloud,
+    required this.onPreviousPage,
+    required this.onNextPage,
+  });
+
+  final MemoryAlbumStoryPage page;
+  final int currentPageIndex;
+  final int totalPages;
+  final Future<void> Function(MemoryAlbumStoryPage page) onToggleReadAloud;
+  final VoidCallback? onPreviousPage;
+  final VoidCallback? onNextPage;
+
+  @override
+  Widget build(BuildContext context) {
+    final output = context.watch<VoiceOutputProvider>();
+    final messageId = _messageId(page);
+    final isLoading = output.loadingMessageId == messageId;
+    final isPlaying = output.playingMessageId == messageId;
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: AppTheme.surface1,
+        border: Border(top: BorderSide(color: AppTheme.border)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(0, 10, 0, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '${currentPageIndex + 1} / $totalPages',
+              style: const TextStyle(
+                color: AppTheme.textSoft,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 7),
+            Row(
+              children: [
+                IconButton(
+                  tooltip: '上一页',
+                  onPressed: onPreviousPage,
+                  icon: const Icon(Icons.chevron_left_rounded),
+                ),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => unawaited(onToggleReadAloud(page)),
+                    icon: isLoading
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : Icon(
+                            isPlaying
+                                ? Icons.stop_circle_outlined
+                                : Icons.volume_up_rounded,
+                          ),
+                    label: Text(
+                      isLoading
+                          ? '准备中'
+                          : isPlaying
+                              ? '停止朗读'
+                              : '朗读当前故事',
+                      style: const TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: '下一页',
+                  onPressed: onNextPage,
+                  icon: const Icon(Icons.chevron_right_rounded),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _messageId(MemoryAlbumStoryPage page) => 'memory-album:${page.itemId}';
+
+class _AlbumTimelineView extends StatelessWidget {
+  const _AlbumTimelineView({
+    required this.album,
+    required this.photosById,
+    required this.onBack,
+  });
+
+  final MemoryAlbum album;
+  final Map<String, ProfilePhotoModel> photosById;
+  final VoidCallback onBack;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(0, 4, 0, 8),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: '返回影集',
+                onPressed: onBack,
+                icon: const Icon(Icons.arrow_back_rounded),
+              ),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '人生时间线',
+                      style: TextStyle(
+                        fontSize: 23,
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.text,
+                      ),
+                    ),
+                    Text(
+                      '沿着时间，慢慢找回熟悉的故事',
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: AppTheme.textSoft,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.only(bottom: 14),
+            children: [
+              if (album.timeline.isEmpty)
+                const _EmptyHint(
+                  title: '时间线还在慢慢整理',
+                  hint: '补充一段重要经历后，就会在这里看到人生里的片段',
+                )
+              else
+                for (final entry in album.timeline)
+                  _AlbumTimelineEntryView(
+                    entry: entry,
+                    photo: _firstRelatedPhoto(entry),
+                  ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  ProfilePhotoModel? _firstRelatedPhoto(MemoryTimelineEntry entry) {
+    for (final photoId in entry.relatedPhotoIds) {
+      final photo = photosById[photoId];
+      if (photo != null) return photo;
+    }
+    return null;
+  }
+}
+
+class _AlbumTimelineEntryView extends StatelessWidget {
+  const _AlbumTimelineEntryView({
+    required this.entry,
+    required this.photo,
+  });
+
+  final MemoryTimelineEntry entry;
+  final ProfilePhotoModel? photo;
+
+  @override
+  Widget build(BuildContext context) {
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            width: 28,
+            child: Column(
+              children: [
+                Container(
+                  width: 14,
+                  height: 14,
+                  decoration: const BoxDecoration(
+                    color: AppTheme.primary,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const Expanded(
+                  child: VerticalDivider(
+                    width: 2,
+                    thickness: 2,
+                    color: AppTheme.borderStrong,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(4, 0, 0, 18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    entry.time.isEmpty ? '一段往事' : entry.time,
+                    style: const TextStyle(
+                      color: AppTheme.primaryDeep,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    entry.title,
+                    style: const TextStyle(
+                      color: AppTheme.text,
+                      fontSize: 21,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  if (photo != null) ...[
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                      borderRadius:
+                          BorderRadius.circular(AppTheme.radiusMedium),
+                      child: SizedBox(
+                        height: 132,
+                        width: double.infinity,
+                        child: _MemoryPhotoImage(photo: photo!),
+                      ),
+                    ),
+                  ],
+                  if (entry.content.isNotEmpty) ...[
+                    const SizedBox(height: 7),
+                    Text(
+                      entry.content,
+                      style: const TextStyle(
+                        color: AppTheme.textSoft,
+                        fontSize: 18,
+                        height: 1.45,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
             ),
           ),
         ],
@@ -1688,8 +2253,9 @@ class _PhotoBookViewState extends State<_PhotoBookView> {
           currentIndex: _currentIndex,
           total: pages.length,
           onPrevious: _currentIndex > 0 ? _goPrevious : null,
-          onNext:
-              _currentIndex < pages.length - 1 ? () => _goNext(pages.length) : null,
+          onNext: _currentIndex < pages.length - 1
+              ? () => _goNext(pages.length)
+              : null,
           onListen: widget.onListen,
           onRefresh: widget.onRefresh,
         ),
@@ -1714,9 +2280,8 @@ class _PhotoBookViewState extends State<_PhotoBookView> {
                 builder: (context, child) {
                   double signedOffset = 0;
                   if (_pageController.position.haveDimensions) {
-                    signedOffset =
-                        (_pageController.page ?? index.toDouble()) -
-                            index.toDouble();
+                    signedOffset = (_pageController.page ?? index.toDouble()) -
+                        index.toDouble();
                   }
                   final absOffset = signedOffset.abs().clamp(0.0, 1.5);
                   final scale = (1.0 - absOffset * 0.10).clamp(0.85, 1.0);
@@ -1734,8 +2299,8 @@ class _PhotoBookViewState extends State<_PhotoBookView> {
                   );
                 },
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 6, vertical: 12),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
                   child: pageChild,
                 ),
               );
@@ -1894,8 +2459,7 @@ class _BookPhotoPage extends StatelessWidget {
               Expanded(
                 flex: 6,
                 child: ClipRRect(
-                  borderRadius:
-                      BorderRadius.circular(AppTheme.radiusMedium),
+                  borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
                   child: SizedBox.expand(
                     child: ColoredBox(
                       color: AppTheme.surface0,
@@ -1917,8 +2481,8 @@ class _BookPhotoPage extends StatelessWidget {
               if (meta.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     color: AppTheme.accent.withValues(alpha: 0.18),
                     borderRadius: BorderRadius.circular(AppTheme.radiusPill),
@@ -2098,8 +2662,7 @@ class _PhotoDetailSheet extends StatelessWidget {
                         ),
                       ),
                     const SizedBox(height: 12),
-                    if (time.isNotEmpty)
-                      _DetailRow(label: '时间', value: time),
+                    if (time.isNotEmpty) _DetailRow(label: '时间', value: time),
                     if (location.isNotEmpty)
                       _DetailRow(label: '地点', value: location),
                     if (people.isNotEmpty)
@@ -2159,9 +2722,7 @@ class _EventDetailSheet extends StatelessWidget {
                             BorderRadius.circular(AppTheme.radiusPill),
                       ),
                       child: Text(
-                        data.chapterTitle.isEmpty
-                            ? '一段往事'
-                            : data.chapterTitle,
+                        data.chapterTitle.isEmpty ? '一段往事' : data.chapterTitle,
                         style: const TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w700,
@@ -2236,132 +2797,6 @@ class _DetailRow extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _NarrationStatusPanel extends StatelessWidget {
-  const _NarrationStatusPanel({
-    required this.album,
-    required this.state,
-    required this.currentSegment,
-  });
-
-  final MemoryAlbum album;
-  final NarrationState state;
-  final NarrationSegment? currentSegment;
-
-  @override
-  Widget build(BuildContext context) {
-    final chapter = currentSegment?.chapterTitle.trim().isNotEmpty == true
-        ? currentSegment!.chapterTitle
-        : '尚未开始';
-    final item = currentSegment?.itemTitle.trim().isNotEmpty == true
-        ? currentSegment!.itemTitle
-        : '等待播放';
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-      decoration: BoxDecoration(
-        color: AppTheme.surface1,
-        borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
-        border: Border.all(color: AppTheme.borderHairline, width: 1),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 44,
-            height: 44,
-            alignment: Alignment.center,
-            decoration: const BoxDecoration(
-              color: AppTheme.primary,
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(
-              Icons.graphic_eq_rounded,
-              color: Colors.white,
-              size: 24,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  album.albumTitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                    color: AppTheme.text,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  '${album.cover.title} · $chapter',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w500,
-                    color: AppTheme.textSoft,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  item,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w500,
-                    color: AppTheme.textCaption,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          _NarrationStatusChip(status: state.status),
-        ],
-      ),
-    );
-  }
-}
-
-class _NarrationStatusChip extends StatelessWidget {
-  const _NarrationStatusChip({required this.status});
-
-  final NarrationStatus status;
-
-  String get _label {
-    return switch (status) {
-      NarrationStatus.idle => '未播放',
-      NarrationStatus.playing => '播放中',
-      NarrationStatus.paused => '已暂停',
-      NarrationStatus.ended => '已读完',
-    };
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final active = status == NarrationStatus.playing;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: active ? AppTheme.primary : AppTheme.surface2,
-        borderRadius: BorderRadius.circular(AppTheme.radiusPill),
-      ),
-      child: Text(
-        _label,
-        style: TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w700,
-          color: active ? Colors.white : AppTheme.primaryDeep,
-        ),
       ),
     );
   }
@@ -2990,16 +3425,17 @@ class _AlbumItemPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _AlbumPanel(
+    return Padding(
       key: keyForItem(item.itemId),
+      padding: const EdgeInsets.only(bottom: 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (photo != null) ...[
             ClipRRect(
-              borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+              borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
               child: SizedBox(
-                height: 190,
+                height: 228,
                 child: _MemoryPhotoImage(photo: photo!),
               ),
             ),
@@ -3046,83 +3482,8 @@ class _AlbumItemPanel extends StatelessWidget {
               color: AppTheme.text,
             ),
           ),
-          if (item.familyQuestions.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            for (final question in item.familyQuestions)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(
-                      Icons.help_outline_rounded,
-                      size: 18,
-                      color: AppTheme.primaryDeep,
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        question,
-                        style: const TextStyle(
-                          fontSize: 18,
-                          height: 1.35,
-                          color: AppTheme.textSoft,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _AlbumQuestionsPanel extends StatelessWidget {
-  const _AlbumQuestionsPanel({required this.questions});
-
-  final List<FamilyQuestion> questions;
-
-  @override
-  Widget build(BuildContext context) {
-    return _AlbumPanel(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const _AlbumSectionTitle('可以再问问家里人'),
-          const SizedBox(height: 8),
-          for (final question in questions)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    question.question,
-                    style: const TextStyle(
-                      fontSize: 20,
-                      height: 1.35,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.text,
-                    ),
-                  ),
-                  if (question.reason.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      child: Text(
-                        question.reason,
-                        style: const TextStyle(
-                          fontSize: 18,
-                          height: 1.35,
-                          color: AppTheme.textSoft,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
+          const SizedBox(height: 4),
+          const Divider(color: AppTheme.borderHairline, height: 1),
         ],
       ),
     );
@@ -4234,9 +4595,8 @@ class _TypingPanel extends StatelessWidget {
                     color: AppTheme.text,
                   ),
                   decoration: InputDecoration(
-                    hintText: pendingAttachment == null
-                        ? '输入想说的话'
-                        : '可以补充说明（可选）',
+                    hintText:
+                        pendingAttachment == null ? '输入想说的话' : '可以补充说明（可选）',
                     hintStyle: const TextStyle(
                       fontSize: 22,
                       fontWeight: FontWeight.w400,

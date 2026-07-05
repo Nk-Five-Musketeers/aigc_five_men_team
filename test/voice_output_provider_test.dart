@@ -25,6 +25,23 @@ class _FakeSynthesizer implements TtsSynthesizer {
   Uint8List bytes = Uint8List.fromList([1, 2, 3, 4]);
 
   @override
+  Uri streamUri({
+    required String text,
+    String voice = 'wanqing',
+    int speed = 50,
+    int volume = 50,
+  }) {
+    return Uri.parse('http://localhost/tts').replace(
+      queryParameters: <String, String>{
+        'text': text,
+        'voice': voice,
+        'speed': speed.toString(),
+        'volume': volume.toString(),
+      },
+    );
+  }
+
+  @override
   Future<Uint8List> synthesize({
     required String text,
     String voice = 'xiaofu',
@@ -53,6 +70,11 @@ class _FakePlayer implements VoiceOutputPlayer {
   @override
   Future<void> dispose() async {
     events.add('dispose');
+  }
+
+  @override
+  Future<void> playUrl(String url, {String? mimeType}) async {
+    events.add('playUrl:$url|$mimeType');
   }
 
   @override
@@ -90,7 +112,8 @@ class _FakeSettingsStore implements VoiceOutputSettingsStore {
 }
 
 void main() {
-  test('uses yunye and persisted speed volume when reading a reply', () async {
+  test('streams read aloud audio through the local TTS URL by default',
+      () async {
     final synthesizer = _FakeSynthesizer();
     final player = _FakePlayer();
     final provider = VoiceOutputProvider(
@@ -100,11 +123,34 @@ void main() {
     );
 
     await provider.loadSettings();
+    await provider.toggleReadAloud(messageId: 'reply-1', text: '鎮ㄥソ');
+
+    expect(provider.playingMessageId, 'reply-1');
+    expect(synthesizer.calls, isEmpty);
+    expect(player.events.single, contains('playUrl:http://localhost/tts?'));
+    expect(player.events.single, contains('voice=wanqing'));
+    expect(player.events.single, contains('speed=42'));
+    expect(player.events.single, contains('volume=63'));
+    provider.dispose();
+  });
+
+  test('uses wanqing and persisted speed volume when reading a reply',
+      () async {
+    final synthesizer = _FakeSynthesizer();
+    final player = _FakePlayer();
+    final provider = VoiceOutputProvider(
+      synthesizer: synthesizer,
+      player: player,
+      settingsStore: _FakeSettingsStore(speed: 42, volume: 63),
+      preferStreaming: false,
+    );
+
+    await provider.loadSettings();
     await provider.toggleReadAloud(messageId: 'reply-1', text: '您好');
 
     expect(provider.playingMessageId, 'reply-1');
     expect(synthesizer.calls, hasLength(1));
-    expect(synthesizer.calls.single.voice, 'yunye');
+    expect(synthesizer.calls.single.voice, 'wanqing');
     expect(synthesizer.calls.single.speed, 42);
     expect(synthesizer.calls.single.volume, 63);
     provider.dispose();
@@ -116,6 +162,7 @@ void main() {
       synthesizer: _FakeSynthesizer(),
       player: player,
       settingsStore: _FakeSettingsStore(),
+      preferStreaming: false,
     );
 
     await provider.toggleReadAloud(messageId: 'reply-1', text: '您好');
@@ -132,6 +179,7 @@ void main() {
       synthesizer: _FakeSynthesizer(),
       player: player,
       settingsStore: _FakeSettingsStore(),
+      preferStreaming: false,
     );
 
     await provider.toggleReadAloud(messageId: 'reply-1', text: '第一句话');
@@ -152,6 +200,7 @@ void main() {
       synthesizer: synthesizer,
       player: _FakePlayer(),
       settingsStore: _FakeSettingsStore(),
+      preferStreaming: false,
     );
 
     await provider.toggleReadAloud(messageId: 'reply-1', text: '您好');
@@ -168,6 +217,7 @@ void main() {
       synthesizer: _FakeSynthesizer(),
       player: _FakePlayer(),
       settingsStore: store,
+      preferStreaming: false,
     );
 
     await provider.loadSettings();

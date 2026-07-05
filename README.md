@@ -227,7 +227,7 @@ aigc_five_men_team/
 
 - `server/local_chat_server.py` — 本地 HTTP 代理：读取 `VIVO_APP_KEY` / `APP_KEY`，转发聊天、ASR 与 TTS 请求。
 - `server/speech_recognition.py` — vivo WebSocket ASR（命令行或后续扩展，**非** Flutter 当前语音路径）。
-- `server/speech_synthesis.py` — vivo WebSocket TTS：将拾忆回复合成为 WAV；默认音色为 `yunye`。
+- `server/speech_synthesis.py` — vivo WebSocket TTS：将拾忆回复合成为 WAV；默认音色为 `wanqing`。
 - `server/database.py` — 服务端辅助 SQLite（与 Flutter `local_database` 独立）。
 - `server/scripts/populate_tables.py` — 填表/导入测试数据。
 - `server/scripts/create_test_user.py` — 创建服务端测试用户。

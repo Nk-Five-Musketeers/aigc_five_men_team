@@ -5,7 +5,12 @@ import unittest
 import wave
 from urllib.parse import parse_qs, urlparse
 
-from server.speech_synthesis import VivoTTSClient, pcm_to_wav, split_text_utf8
+from server.speech_synthesis import (
+    VivoTTSClient,
+    pcm_to_wav,
+    split_text_utf8,
+    streaming_wav_header,
+)
 
 
 class _FakeWebSocket:
@@ -46,6 +51,15 @@ class SpeechSynthesisTest(unittest.TestCase):
             self.assertEqual(reader.getsampwidth(), 2)
             self.assertEqual(reader.getframerate(), 24000)
             self.assertEqual(reader.readframes(reader.getnframes()), pcm)
+
+    def test_streaming_wav_header_uses_unknown_sizes(self):
+        header = streaming_wav_header()
+
+        self.assertEqual(header[:4], b"RIFF")
+        self.assertEqual(header[8:12], b"WAVE")
+        self.assertEqual(header[36:40], b"data")
+        self.assertEqual(int.from_bytes(header[4:8], "little"), 0xFFFFFFFF)
+        self.assertEqual(int.from_bytes(header[40:44], "little"), 0xFFFFFFFF)
 
     def test_client_sends_required_headers_and_collects_pcm_frames(self):
         pcm_frames = [b"\x01\x02", b"\x03\x04"]
@@ -111,6 +125,47 @@ class SpeechSynthesisTest(unittest.TestCase):
         self.assertEqual(payload["speed"], 45)
         self.assertEqual(payload["volume"], 60)
         self.assertEqual(base64.b64decode(payload["text"]).decode("utf-8"), "您好")
+        self.assertTrue(ws.closed)
+
+
+    def test_client_streams_pcm_frames_before_wav_wrapping(self):
+        pcm_frames = [b"\x01\x02", b"\x03\x04"]
+        ws = _FakeWebSocket(
+            [
+                json.dumps(
+                    {
+                        "error_code": 0,
+                        "data": {
+                            "audio": base64.b64encode(pcm_frames[0]).decode(),
+                            "status": 1,
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "error_code": 0,
+                        "data": {
+                            "audio": base64.b64encode(pcm_frames[1]).decode(),
+                            "status": 2,
+                        },
+                    }
+                ),
+            ]
+        )
+
+        def fake_connection(url, header, timeout):
+            return ws
+
+        client = VivoTTSClient(
+            app_key="server-key",
+            app_id="2026594139",
+            connection_factory=fake_connection,
+        )
+
+        self.assertEqual(
+            list(client.stream_pcm("hi", voice="wanqing")),
+            pcm_frames,
+        )
         self.assertTrue(ws.closed)
 
 

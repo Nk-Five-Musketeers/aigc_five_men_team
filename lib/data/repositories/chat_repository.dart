@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -8,6 +9,92 @@ import '../models/chat_message.dart';
 import '../models/extracted_relation_hint.dart';
 import '../models/memory_extraction_payload.dart';
 import '../models/photo_intent_plan.dart';
+
+Stream<String> assistantTextDeltasFromSse(
+  Stream<List<int>> byteStream,
+) async* {
+  await for (final line
+      in byteStream.transform(utf8.decoder).transform(const LineSplitter())) {
+    final trimmedLeft = line.trimLeft();
+    if (!trimmedLeft.startsWith('data:')) continue;
+    final dataText = trimmedLeft.substring(5).trimLeft();
+    if (dataText.isEmpty) continue;
+    if (dataText.trim() == '[DONE]') break;
+
+    dynamic decoded;
+    try {
+      decoded = jsonDecode(dataText);
+    } catch (_) {
+      continue;
+    }
+    if (decoded is! Map) continue;
+    final delta = _extractAssistantDelta(
+      Map<String, dynamic>.from(
+        decoded.map((k, v) => MapEntry(k.toString(), v)),
+      ),
+    );
+    if (delta != null && delta.isNotEmpty) {
+      yield delta;
+    }
+  }
+}
+
+String? _extractAssistantDelta(Map<String, dynamic> data) {
+  final nested = data['data'];
+  if (nested is Map) {
+    final inner = Map<String, dynamic>.from(
+      nested.map((k, v) => MapEntry(k.toString(), v)),
+    );
+    final t = _extractAssistantDelta(inner);
+    if (t != null && t.isNotEmpty) return t;
+  }
+
+  final choices = data['choices'];
+  if (choices is! List || choices.isEmpty) return null;
+  final first = choices.first;
+  if (first is! Map) return null;
+  final choice = Map<String, dynamic>.from(
+    first.map((k, v) => MapEntry(k.toString(), v)),
+  );
+
+  final delta = choice['delta'];
+  if (delta is Map) {
+    final d = Map<String, dynamic>.from(
+      delta.map((k, v) => MapEntry(k.toString(), v)),
+    );
+    return _messageContentToString(d['content']);
+  }
+
+  final message = choice['message'];
+  if (message is Map) {
+    final m = Map<String, dynamic>.from(
+      message.map((k, v) => MapEntry(k.toString(), v)),
+    );
+    return _messageContentToString(m['content']);
+  }
+  return _messageContentToString(choice['text']);
+}
+
+String? _messageContentToString(Object? content) {
+  if (content == null) return null;
+  if (content is String) return content;
+  if (content is List) {
+    final buf = StringBuffer();
+    for (final part in content) {
+      if (part is String) {
+        buf.write(part);
+      } else if (part is Map) {
+        final m = Map<String, dynamic>.from(
+          part.map((k, v) => MapEntry(k.toString(), v)),
+        );
+        final text = m['text'];
+        if (text is String) buf.write(text);
+      }
+    }
+    return buf.toString();
+  }
+  return null;
+}
 
 const _fullMemoryExtractSystemPrompt = '''
 你是结构化信息抽取模块。用户消息中只会提供**老人本人的发言文本**（不含陪伴助手/拾忆的回复）。请仅根据这些发言、已有周围人摘要、已有老人档案摘要抽取可写入本地数据库的结构化信息；**禁止**把助手说过的人名、经历、电话等当作事实写入 JSON。
@@ -215,6 +302,67 @@ class ChatRepository {
       response: response,
       message: '模型返回为空或格式无法识别',
     );
+  }
+
+  /// Main chat reply as OpenAI-style SSE text deltas.
+  Stream<String> streamMessage({
+    required List<ChatMessage> history,
+    required Map<String, dynamic> promptContext,
+  }) async* {
+    final messages = _compactHistory(history);
+
+    final response = await _apiClient.dio.post<ResponseBody>(
+      '/api/chat',
+      data: <String, dynamic>{
+        'model': AppConstants.modelId,
+        'messages': messages,
+        'prompt_context': promptContext,
+        'temperature': 0.65,
+        'top_p': 0.75,
+        'max_tokens': 700,
+        'reasoning_effort': 'minimal',
+        'enable_thinking': false,
+        'stream': true,
+      },
+      options: Options(
+        responseType: ResponseType.stream,
+        validateStatus: (status) => status != null && status < 600,
+      ),
+    );
+
+    final status = response.statusCode ?? 0;
+    final body = response.data;
+    if (status < 200 || status >= 300 || body == null) {
+      final detail = body == null
+          ? ''
+          : await _decodeStreamError(body.stream.cast<List<int>>());
+      throw DioException(
+        requestOptions: response.requestOptions,
+        response: response,
+        message: detail.isNotEmpty ? detail : '妯″瀷娴佸紡杩斿洖澶辫触 (HTTP $status)',
+      );
+    }
+
+    yield* assistantTextDeltasFromSse(body.stream.cast<List<int>>());
+  }
+
+  Future<String> _decodeStreamError(Stream<List<int>> stream) async {
+    final bytes = <int>[];
+    await for (final chunk in stream) {
+      bytes.addAll(chunk);
+    }
+    if (bytes.isEmpty) return '';
+    final raw = utf8.decode(bytes, allowMalformed: true);
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        final detail = decoded['detail']?.toString();
+        final error = decoded['error']?.toString();
+        if (detail != null && detail.isNotEmpty) return detail;
+        if (error != null && error.isNotEmpty) return error;
+      }
+    } catch (_) {}
+    return raw.trim();
   }
 
   /// 本地 NLP 润色（`server/nlp_speech_polish.py`，无需 AppKey）。
